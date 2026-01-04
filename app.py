@@ -12,7 +12,6 @@ st.title("🧹 Centro de Comando y Limpieza - T3F")
 def cargar_datos():
     # A. Cargar Padrón Sucio
     try:
-        # Intenta leer CSV con coma, si falla prueba punto y coma
         df = pd.read_csv("datos.csv", encoding='latin-1', sep=',')
         if df.shape[1] < 2: df = pd.read_csv("datos.csv", encoding='latin-1', sep=';')
     except FileNotFoundError:
@@ -37,7 +36,7 @@ def normalizar_calle(texto, diccionario_externo):
     if calle in diccionario_externo:
         return diccionario_externo[calle]
     
-    # Prioridad 2: Reglas Fijas
+    # Prioridad 2: Reglas Fijas (Casos críticos)
     fijas = {
         "AV SAN MARTIN": "AV SAN MARTIN", "AV. SAN MARTIN": "AV SAN MARTIN",
         "BOULEVARD SAN MARTIN": "BOULEVARD SAN MARTIN",
@@ -101,9 +100,9 @@ if df is not None:
             if b:
                 st.dataframe(df[df['Apellido'].str.contains(b.upper(), na=False)])
 
-    # --- PESTAÑA 2: PARA GENERAR EL ARCHIVO DE CORRECCIONES ---
+    # --- PESTAÑA 2: MANTENIMIENTO INTELIGENTE ---
     with tab2:
-    st.header("Generador de Reglas")
+        st.header("Generador de Reglas")
         
         # Calculamos cuántas calles ya arreglaste
         arregladas = len(diccionario_correcciones)
@@ -124,23 +123,18 @@ if df is not None:
                 for i, calle_a in enumerate(calles_unicas):
                     if i % 100 == 0: progress.progress(i/len(calles_unicas))
                     
-                    # --- EL CAMBIO CLAVE ESTÁ AQUÍ ---
-                    # Si esta calle YA tiene una regla en tu archivo correcciones.csv, LA IGNORAMOS
+                    # SI YA ESTÁ CORREGIDA, LA SALTAMOS
                     if calle_a in diccionario_correcciones: 
                         continue
-                    # ---------------------------------
                     
                     if calle_a in procesados: continue
                     nm_a = clean_tmp(calle_a)
                     grupo = [calle_a]
                     
                     for calle_b in calles_unicas:
-                        # También ignoramos la calle B si ya está corregida
-                        if calle_b in diccionario_correcciones: continue
+                        if calle_b in diccionario_correcciones: continue # SALTAMOS TAMBIÉN LA COMPARADA
                         
                         if calle_a == calle_b or calle_b in procesados: continue
-                        
-                        # Comparamos similitud
                         if SequenceMatcher(None, nm_a, clean_tmp(calle_b)).ratio() > 0.85:
                             grupo.append(calle_b)
                             procesados.add(calle_b)
@@ -150,7 +144,6 @@ if df is not None:
                         # Sugerimos corrección automática
                         oficial = normalizar_calle(grupo[0], diccionario_correcciones)
                         for mala in grupo:
-                            # Solo agregamos si no está ya corregida
                             if mala not in diccionario_correcciones and mala != oficial:
                                 sugerencias.append({"Original": mala, "Corregido": oficial})
                 
@@ -161,17 +154,18 @@ if df is not None:
                     st.warning(f"⚠️ Se encontraron {len(df_sug)} NUEVOS errores posibles.")
                     st.dataframe(df_sug)
                     
-                    # IMPORTANTE: Al descargar, combinamos lo NUEVO con lo VIEJO
-                    # Para que no pierdas lo que ya hiciste
                     csv_nuevo = df_sug.to_csv(index=False, header=False).encode('utf-8')
                     
                     st.markdown("### ¿Qué hago ahora?")
                     st.markdown("1. Descarga estos **nuevos** errores.")
-                    st.markdown("2. Abre tu archivo `correcciones.csv` que ya tenías en Excel.")
-                    st.markdown("3. Pega estos nuevos datos al final.")
+                    st.markdown("2. Abre tu archivo `correcciones.csv` (el que subiste antes) en Excel.")
+                    st.markdown("3. Pega estos nuevos datos al final de la lista.")
                     st.markdown("4. Sube el `correcciones.csv` actualizado a GitHub.")
                     
                     st.download_button("⬇️ Descargar SOLO los nuevos errores", csv_nuevo, "nuevos_errores.csv", "text/csv")
                 else:
                     st.balloons()
-                    st.success("¡Felicidades! No se detectaron grupos de calles similares pendientes de revisión.")
+                    st.success("¡Excelente! No se detectaron calles similares pendientes.")
+
+else:
+    st.warning("⚠️ Esperando archivo 'datos.csv'. Súbelo a GitHub.")
