@@ -1,22 +1,3 @@
-  ¡Perfecto! Vamos manos a la obra.
-
-Aquí tienes el código de la Herramienta de Edición Manual.
-
-Esta aplicación está diseñada específicamente para resolver tu preocupación:
-
-Separa el número de la calle internamente (ej: toma "CAFERATA 5472", guarda el 5472 en un bolsillo y te muestra solo "CAFERATA").
-
-Tú unificas el nombre.
-
-Generas el archivo de correcciones.
-
-Cuando usemos este archivo en el mapa final, el sistema pegará el nombre nuevo ("CAFFERATA") con el número que guardó en el bolsillo (5472). La altura está a salvo.
-
-PASO 1: El Código del Editor
-Ve a app.py, borra todo y pega esto:
-
-Python
-
 import streamlit as st
 import pandas as pd
 import re
