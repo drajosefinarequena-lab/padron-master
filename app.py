@@ -2,119 +2,133 @@ import streamlit as st
 import pandas as pd
 import re
 
-st.set_page_config(page_title="Separador T3F - Códigos Catastrales", layout="wide", page_icon="🏗️")
-st.title("🏗️ Separador de Direcciones (Modo Tres de Febrero)")
+st.set_page_config(page_title="Limpiador T3F - Selector Manual", layout="wide", page_icon="🎯")
+st.title("🎯 Limpiador de Direcciones (Con Selector Manual)")
 st.markdown("""
-Esta herramienta está calibrada para eliminar códigos catastrales como **AV.271-**, **RP201-**, **PJE.12-** y detectar la altura real al final.
+**Paso 1:** Sube tu archivo.
+**Paso 2:** Selecciona la columna correcta (la que tiene AV.271, RP201, etc).
+**Paso 3:** La App limpiará SOLO esa columna.
 """)
 
-# --- 1. FUNCIÓN DE LIMPIEZA QUIRÚRGICA ---
+# --- 1. FUNCIÓN DE LIMPIEZA MEJORADA ---
 def limpiar_y_separar(texto):
     if not isinstance(texto, str):
         return pd.Series([None, None, None])
     
-    # Normalizamos
-    original = texto.upper().strip()
-    clean = original
-
-    # PASO A: ELIMINAR PREFIJOS CATASTRALES (La parte difícil)
-    # Buscamos patrones como:
-    # "AV.271- "
-    # "RP201- 283 - "
-    # "PJE.12- "
-    # Regex explicada:
-    # ^(AV\.|RP|PJE\.|C\.)   -> Empieza con AV., RP, PJE. o C.
-    # \s*\d+                 -> Seguido de números (271, 201)
-    # (\s*-\s*\d+)?          -> Opcionalmente otro guion y numero (el 283 o 618)
-    # \s*-\s* -> Termina con un guion separador
+    # Limpieza previa
+    clean = texto.upper().strip()
     
-    patron_basura = r"^(AV\.|RP|PJE\.|C\.|DIAG\.)\s*\d+(\s*-\s*\d+)?\s*-\s*"
-    clean = re.sub(patron_basura, "", clean)
-
-    # PASO B: ELIMINAR CÓDIGOS INTERNOS (Ej: "-ESC12-")
-    clean = re.sub(r"\s*-\s*ESC\d+\s*-\s*", " ", clean)
-
-    # PASO C: EXTRAER CALLE Y ALTURA (Del texto ya limpio)
-    # Buscamos el último número antes de una coma, un "CP", o el final
-    # Ejemplo: "MILITAR 3050, CP..." -> Calle: MILITAR, Num: 3050
+    # A. ELIMINAR CÓDIGOS TIPO "AV.271-" o "RP201-"
+    # Busca: Inicio + (AV/RP/PJE/C/DIAG) + Numeros + Guiones + Numeros + Guion final
+    patron_codigo = r"^(AV\.|RP|PJE\.|C\.|DIAG\.|T\.)\s*\d+(\s*-\s*\d+)?\s*-\s*"
+    clean = re.sub(patron_codigo, "", clean)
     
-    match = re.search(r"^(.+?)\s+(\d+)(\s*[,;].*|\s*CP.*|\s*LOC.*)?$", clean)
+    # B. ELIMINAR CÓDIGOS TIPO "-ESC12-" o "- 14 -" en el medio
+    clean = re.sub(r"\s*-\s*(ESC|EDF|TORRE)?\s*\d+\s*-\s*", " ", clean)
+
+    # C. BUSCAR CALLE Y ALTURA
+    # Estrategia: Buscar el último número sólido antes de textos como "PISO", "DPTO", "CP", "LOC"
+    # Regex:
+    # ^(.+?)      -> Grupo 1: Calle (Todo lo del principio)
+    # \s+         -> Espacio obligatorio
+    # (\d+)       -> Grupo 2: Altura (Números)
+    # (\s.*)?$    -> Grupo 3: Resto (Opcional, lo que sigue)
+    
+    # Primero cortamos cosas obvias del final para que no confundan (CP, Localidad)
+    # Si hay una coma seguida de CP o localidad, cortamos ahí virtualmente para buscar la altura antes
+    corte_virtual = re.split(r",\s*(CP|LOC|CASEROS|CIUDADELA|TRES DE FEBRERO)", clean)[0]
+    
+    match = re.search(r"^(.+?)\s+(\d+)$", corte_virtual)
     
     if match:
         calle = match.group(1).strip()
         altura = match.group(2).strip()
         
-        # El resto lo tomamos del original para no perder el CP o localidad
-        # Buscamos dónde termina la altura en el original para sacar el resto
-        resto = ""
-        if match.group(3):
-            resto = match.group(3).strip(",; ")
+        # Recuperamos el resto original quitando la calle y altura encontradas
+        # Esto es para guardar Piso, Depto, Localidad en la 3er columna
+        resto = clean.replace(calle, "").replace(altura, "", 1).strip(" -.,")
         
-        # Limpieza final de la calle (quitar guiones sobrantes)
-        calle = calle.replace("-", " ").strip()
+        # Limpieza final de calle (quitar guiones iniciales/finales)
+        calle = calle.strip(" -")
         
         return pd.Series([calle, altura, resto])
     else:
-        # Si falla, devolvemos lo que pudimos limpiar en la primera columna
+        # Si no encuentra patrón Calle + Numero, devuelve todo en calle
         return pd.Series([clean, None, None])
 
 # --- 2. INTERFAZ ---
-uploaded_file = st.file_uploader("Sube tu archivo con códigos (CSV/Excel)", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader("📂 Sube tu Padrón (Excel/CSV)", type=["xlsx", "csv"])
 
 if uploaded_file:
+    # Carga inteligente
     try:
         if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python')
+            # Probamos varios separadores por si acaso
+            try:
+                df = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python')
+            except:
+                df = pd.read_csv(uploaded_file, encoding='utf-8', sep=None, engine='python')
         else:
             df = pd.read_excel(uploaded_file)
-        st.success(f"Cargado: {len(df)} registros.")
+            
+        st.success(f"✅ Archivo cargado: {len(df)} filas detectadas.")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error al leer: {e}")
         st.stop()
 
-    cols = df.columns.tolist()
-    col_dom = next((c for c in cols if 'DOMICILIO' in c.upper() or 'DIRECCION' in c.upper()), cols[0])
+    # --- PASO CRÍTICO: SELECCIÓN DE COLUMNA ---
+    st.divider()
+    st.subheader("🕵️ Identifica la columna de Dirección")
+    st.info("Mira la tabla de abajo. ¿Cuál es la columna que tiene los datos sucios (AV.271, MILITAR, etc)?")
     
-    st.info(f"Procesando columna: **{col_dom}**")
+    # Mostramos una muestra para que el usuario vea
+    st.dataframe(df.head(3))
     
-    # VISTA PREVIA DE UN CASO DIFÍCIL (Para que veas si funciona antes de procesar todo)
-    ejemplo = df[col_dom].iloc[0]
-    st.caption(f"Ejemplo del primer dato crudo: {ejemplo}")
+    # Selector
+    todas_columnas = df.columns.tolist()
+    # Intentamos adivinar inteligentemente para ponerlo por defecto
+    default_idx = 0
+    for i, col in enumerate(todas_columnas):
+        muestras = df[col].astype(str).head(5).tolist()
+        # Si alguna muestra tiene números y letras, es probable candidato
+        if any(re.search(r"\d", m) and re.search(r"[a-zA-Z]", m) for m in muestras):
+            default_idx = i
+            break
+            
+    columna_elegida = st.selectbox("Selecciona la columna AQUÍ:", todas_columnas, index=default_idx)
+    
+    st.write(f"Has elegido procesar: **{columna_elegida}**")
+    st.caption(f"Ejemplo de dato a limpiar: {df[columna_elegida].iloc[0]}")
 
-    if st.button("🚀 LIMPIAR CÓDIGOS Y SEPARAR", type="primary"):
-        with st.spinner("Eliminando AV.271, RP201 y separando alturas..."):
+    # --- BOTÓN DE ACCIÓN ---
+    if st.button("🚀 LIMPIAR AHORA", type="primary"):
+        with st.spinner(f"Limpiando {columna_elegida}..."):
             
-            # Aplicamos la función
-            nuevas = df[col_dom].apply(limpiar_y_separar)
-            nuevas.columns = ['CALLE_LIMPIA', 'ALTURA', 'DETALLES']
+            # 1. Aplicamos limpieza
+            nuevas_cols = df[columna_elegida].astype(str).apply(limpiar_y_separar)
+            nuevas_cols.columns = ['CALLE_LIMPIA', 'ALTURA', 'DETALLES_EXTRA']
             
-            # Unimos
-            df_final = pd.concat([df, nuevas], axis=1)
+            # 2. Unimos al original
+            df_final = pd.concat([df, nuevas_cols], axis=1)
             
-            # Ordenamos columnas para Excel
-            cols_out = ['Apellido', 'Nombre', 'CALLE_LIMPIA', 'ALTURA', 'DETALLES']
-            # Agregamos las que existan en el original
-            cols_out = [c for c in cols_out if c in df_final.columns] 
-            # Agregamos el resto
-            cols_out += [c for c in df_final.columns if c not in cols_out]
+            # 3. Reordenamos para que lo nuevo quede al principio
+            cols_fijas = ['CALLE_LIMPIA', 'ALTURA', 'DETALLES_EXTRA']
+            cols_resto = [c for c in df.columns if c != columna_elegida] # Quitamos la sucia original o la dejamos al final
+            df_export = df_final[cols_fijas + cols_resto]
             
-            df_export = df_final[cols_out]
+            st.success("¡Listo! Mira la diferencia:")
+            st.dataframe(df_export.head())
             
-            st.balloons()
+            # 4. Descarga
+            nombre_final = "padron_limpio_ok.csv"
+            csv = df_export.to_csv(index=False).encode('latin-1', errors='replace')
             
-            # MOSTRAR RESULTADOS
-            st.subheader("Verificación de Resultados")
-            st.write("Fíjate en las columnas 'CALLE_LIMPIA' y 'ALTURA'.")
-            st.dataframe(df_export[[col_dom, 'CALLE_LIMPIA', 'ALTURA']].head(10))
-            
-            # DESCARGA
-            csv = df_export.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📥 DESCARGAR BASE LIMPIA",
+                label="📥 DESCARGAR PADRÓN CORREGIDO",
                 data=csv,
-                file_name="padron_sin_codigos.csv",
+                file_name=nombre_final,
                 mime="text/csv"
             )
 
 else:
-    st.info("Sube el archivo.")
+    st.info("Esperando archivo...")
