@@ -5,7 +5,7 @@ from difflib import SequenceMatcher
 
 # Configuración
 st.set_page_config(page_title="Padrón Inteligente T3F", layout="wide", page_icon="🧠")
-st.title("🧠 Padrón Inteligente: Abreviaturas + Fuzzy Matching")
+st.title("🧠 Padrón Inteligente: Normalización + Fuzzy Matching")
 
 # --- 1. CARGA DE DATOS ---
 @st.cache_data
@@ -37,6 +37,7 @@ def expandir_abreviaturas(texto):
     reemplazos = {
         r"\bSGTO\b": "SARGENTO",
         r"\bDR\b": "DOCTOR",
+        r"\bDOC\b": "DOCTOR",
         r"\bDRA\b": "DOCTORA",
         r"\bGRAL\b": "GENERAL",
         r"\bCNEL\b": "CORONEL",
@@ -45,14 +46,15 @@ def expandir_abreviaturas(texto):
         r"\bALMTE\b": "ALMIRANTE",
         r"\bCDTE\b": "COMANDANTE",
         r"\bPROF\b": "PROFESOR",
-        r"\ING\b": "INGENIERO",
+        r"\bING\b": "INGENIERO",      # <--- AQUÍ ESTABA EL ERROR, YA CORREGIDO
         r"\bARQ\b": "ARQUITECTO",
         r"\bPBR\b": "PRESBITERO",
         r"\bPCIA\b": "PROVINCIA",
         r"\bLIB\b": "LIBERTADOR",
-        r"\bAV\b": "AVENIDA", # Estandarizamos a AVENIDA o AV (según prefieras)
+        r"\bAV\b": "AVENIDA", 
         r"\bAVDA\b": "AVENIDA",
         r"\bBV\b": "BOULEVARD",
+        r"\bPJE\b": "PASAJE",
     }
     
     for patron, reemplazo in reemplazos.items():
@@ -85,34 +87,34 @@ def expandir_abreviaturas(texto):
 def generar_mapa_fuzzy(lista_calles_unicas, umbral=0.70):
     """
     Agrupa calles similares basándose en similitud de texto.
-    Devuelve un diccionario {nombre_variante: nombre_oficial}
     """
-    # Ordenamos por frecuencia o longitud (asumimos que la más larga suele ser la más completa)
-    # En este caso, simplemente ordenamos alfabéticamente para tener consistencia, 
-    # pero idealmente deberíamos usar la frecuencia del dataset.
     calles_ordenadas = sorted(lista_calles_unicas)
-    
     mapa_correccion = {}
     procesados = set()
     
     # Barra de progreso visual
+    texto_progreso = st.empty()
     progreso = st.progress(0)
     total = len(calles_ordenadas)
     
     for i, calle_base in enumerate(calles_ordenadas):
-        # Actualizar barra cada tanto
-        if i % 100 == 0: progreso.progress(i / total)
+        if i % 50 == 0: 
+            progreso.progress(i / total)
+            texto_progreso.text(f"Analizando calle {i} de {total}...")
             
         if calle_base in procesados:
             continue
             
-        # Esta calle será la "Oficial" de su grupo (por ser la primera que encontramos)
-        # Ojo: Aquí podrías refinar lógica para elegir la "mejor" del grupo
+        # Esta calle será la "Oficial" de su grupo
         procesados.add(calle_base)
         mapa_correccion[calle_base] = calle_base
         
         # Buscamos parecidos en el resto de la lista
-        for calle_candidata in calles_ordenadas[i+1:]:
+        # OPTIMIZACIÓN: Solo miramos las siguientes 500 para no tardar una eternidad
+        # (Si la lista está ordenada alfabéticamente, los parecidos suelen estar cerca)
+        rango_comparacion = calles_ordenadas[i+1 : i+500] 
+        
+        for calle_candidata in rango_comparacion:
             if calle_candidata in procesados:
                 continue
             
@@ -121,11 +123,11 @@ def generar_mapa_fuzzy(lista_calles_unicas, umbral=0.70):
             
             if similitud >= umbral:
                 # ¡Encontramos un parecido!
-                # Ejemplo: "SARGENTO CABRAL" (Base) vs "SARG CABRAL" (Candidata) -> Match
                 mapa_correccion[calle_candidata] = calle_base
                 procesados.add(calle_candidata)
     
     progreso.empty()
+    texto_progreso.empty()
     return mapa_correccion
 
 # --- INICIO APP ---
@@ -134,29 +136,29 @@ df = cargar_datos()
 if df is not None:
     if 'CALLE' in df.columns:
         
-        st.info("Paso 1: Expandiendo abreviaturas (SGTO, DR, RIO IV)...")
-        
         # 1. Normalización estricta (Reglas fijas)
-        df['CALLE_PRE'] = df['CALLE'].astype(str).apply(expandir_abreviaturas)
+        if 'CALLE_PRE' not in df.columns:
+            with st.spinner("Expandiendo abreviaturas (SGTO, DR, RIO IV)..."):
+                df['CALLE_PRE'] = df['CALLE'].astype(str).apply(expandir_abreviaturas)
         
         # 2. Fuzzy Matching (Agrupación por similitud)
-        st.info("Paso 2: Buscando coincidencias del 70% para unificar variantes...")
-        
-        # Obtenemos las únicas para no comparar 20,000 veces lo mismo
-        unicas = df['CALLE_PRE'].unique().tolist()
-        
-        # Generamos el diccionario de corrección
-        diccionario_fuzzy = generar_mapa_fuzzy(unicas, umbral=0.70)
-        
-        # Aplicamos el diccionario
-        df['CALLE_OFICIAL'] = df['CALLE_PRE'].map(diccionario_fuzzy)
-        
-        # Altura numérica
-        df['ALTURA_NUM'] = pd.to_numeric(df['ALTURA'], errors='coerce').fillna(0).astype(int)
+        if 'CALLE_OFICIAL' not in df.columns:
+            st.info("Buscando coincidencias del 70% para unificar variantes... (Esto puede tardar unos segundos)")
+            
+            # Obtenemos las únicas
+            unicas = df['CALLE_PRE'].unique().tolist()
+            
+            # Generamos el diccionario de corrección
+            diccionario_fuzzy = generar_mapa_fuzzy(unicas, umbral=0.70)
+            
+            # Aplicamos el diccionario
+            df['CALLE_OFICIAL'] = df['CALLE_PRE'].map(diccionario_fuzzy)
+            
+            # Altura numérica
+            df['ALTURA_NUM'] = pd.to_numeric(df['ALTURA'], errors='coerce').fillna(0).astype(int)
 
         # MÉTRICAS
         n_antes = df['CALLE'].nunique()
-        n_pre = df['CALLE_PRE'].nunique()
         n_final = df['CALLE_OFICIAL'].nunique()
         
         st.success(f"✅ Proceso Completo: De **{n_antes}** nombres originales bajamos a **{n_final}** calles unificadas.")
@@ -181,7 +183,11 @@ if df is not None:
                         (res['ALTURA_NUM'] <= alt_sel + 200)
                     ]
                 st.write(f"Vecinos: {len(res)}")
-                st.dataframe(res[['APELLIDO', 'NOMBRE', 'CALLE_OFICIAL', 'ALTURA_NUM', 'CALLE']])
+                
+                # Mostrar columnas disponibles
+                cols_view = ['APELLIDO', 'NOMBRE', 'DNI', 'CALLE_OFICIAL', 'ALTURA_NUM', 'CALLE']
+                cols_view = [c for c in cols_view if c in df.columns]
+                st.dataframe(res[cols_view])
 
         # TAB 2: AUDITORÍA (Ver qué unificó el Fuzzy)
         with tab2:
