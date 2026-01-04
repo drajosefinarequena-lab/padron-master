@@ -1,17 +1,3 @@
-¡Excelente! Ahora estamos hilando fino. Tienes toda la razón: estandarizar las abreviaturas y los números es la clave antes de comparar. Si convertimos todo a su versión extendida ("SGTO" → "SARGENTO", "IV" → "CUARTO"), el comparador automático funcionará mucho mejor.
-
-He preparado el código definitivo que incluye:
-
-Traductor de Abreviaturas: Convierte SGTO, DR, CNEL, TTE, PCIA, etc.
-
-Detector de Números Romanos y Variantes: Arregla RIO 4, RIO IV, R JACHAL.
-
-Algoritmo de Fusión (70%): Una vez limpio, busca calles parecidas (con un umbral del 70%) y las unifica automáticamente bajo el nombre más frecuente.
-
-Copia este código en app.py. Es la versión más potente hasta ahora.
-
-Python
-
 import streamlit as st
 import pandas as pd
 import re
