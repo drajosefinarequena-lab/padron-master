@@ -1,117 +1,153 @@
+  ¡Perfecto! Vamos manos a la obra.
+
+Aquí tienes el código de la Herramienta de Edición Manual.
+
+Esta aplicación está diseñada específicamente para resolver tu preocupación:
+
+Separa el número de la calle internamente (ej: toma "CAFERATA 5472", guarda el 5472 en un bolsillo y te muestra solo "CAFERATA").
+
+Tú unificas el nombre.
+
+Generas el archivo de correcciones.
+
+Cuando usemos este archivo en el mapa final, el sistema pegará el nombre nuevo ("CAFFERATA") con el número que guardó en el bolsillo (5472). La altura está a salvo.
+
+PASO 1: El Código del Editor
+Ve a app.py, borra todo y pega esto:
+
+Python
+
 import streamlit as st
 import pandas as pd
 import re
+import io
 
-st.set_page_config(page_title="Editor Manual T3F", layout="wide", page_icon="✏️")
-st.title("✏️ El Unificador Manual - Tres de Febrero")
-st.markdown("Esta herramienta te permite seleccionar variantes de una calle y unificarlas bajo un solo nombre oficial.")
+st.set_page_config(page_title="Editor Manual T3F", layout="wide", page_icon="✂️")
+st.title("✂️ Editor de Calles (Separa Alturas)")
+st.markdown("""
+**Instrucciones:**
+1. Esta herramienta corta los números temporalmente para que veas solo los nombres de calle.
+2. Agrupa las variantes (ej: CAFERATA, CAFERETA) y dales un nombre oficial.
+3. Al final, descarga el archivo `correcciones.csv`.
+**Nota:** La altura de cada vecino se conserva intacta en la base de datos original.
+""")
 
-# --- 1. GESTIÓN DE ESTADO (MEMORIA TEMPORAL) ---
+# --- 1. GESTIÓN DE MEMORIA ---
 if 'correcciones' not in st.session_state:
     st.session_state['correcciones'] = {}
 
-# --- 2. CARGA DE DATOS ---
+# --- 2. FUNCIÓN DE CORTE (LA TIJERA) ---
+def separar_calle_altura(texto):
+    if not isinstance(texto, str): return texto, 0
+    t = texto.upper().strip()
+    # Regex: Busca texto al principio y números al final
+    match = re.search(r"^(.+?)\s+(\d+)$", t)
+    if match:
+        calle = match.group(1).strip()
+        return calle
+    return t # Si no tiene número, devuelve todo el texto
+
+# --- 3. CARGA DE DATOS ---
 @st.cache_data
-def cargar_datos_crudos():
+def cargar_y_cortar():
     try:
         df = pd.read_csv("datos.csv", encoding='latin-1', sep=None, engine='python')
-        # Limpieza preliminar solo para sacar calles vacías
-        df['CALLE_BRUTA'] = df['Domicilio'].apply(lambda x: re.search(r"^([A-Z\s\.\d\ñ\Ñ]+)", str(x).upper()).group(1).strip() if re.search(r"^([A-Z\s\.\d\ñ\Ñ]+)", str(x).upper()) else None)
-        df = df.dropna(subset=['CALLE_BRUTA'])
-        return df
-    except Exception as e:
-        return None
-
-df = cargar_datos_crudos()
-
-# --- 3. LOGICA DE CARGA DE TRABAJO PREVIO ---
-uploaded_file = st.sidebar.file_uploader("📂 Cargar trabajo previo (correcciones.csv)", type=["csv"])
-if uploaded_file is not None:
-    try:
-        df_prev = pd.read_csv(uploaded_file)
-        # Cargamos al estado solo si es la primera vez
-        if not st.session_state['correcciones']:
-            st.session_state['correcciones'] = dict(zip(df_prev['Original'], df_prev['Corregido']))
-            st.sidebar.success(f"Se cargaron {len(st.session_state['correcciones'])} reglas previas.")
+        
+        # Detectamos columna domicilio
+        col_dom = 'Domicilio' if 'Domicilio' in df.columns else df.columns[0]
+        
+        # APLICAMOS LA TIJERA: Creamos una columna solo con nombres
+        df['NOMBRE_SOLO'] = df[col_dom].apply(separar_calle_altura)
+        
+        # Eliminamos vacíos y ordenamos
+        nombres_unicos = sorted(df['NOMBRE_SOLO'].dropna().unique())
+        return nombres_unicos
     except:
-        st.sidebar.error("Error cargando archivo previo.")
+        return []
 
-# --- INTERFAZ PRINCIPAL ---
+nombres_unicos = cargar_y_cortar()
 
-if df is not None:
-    # Filtramos las calles que YA tienen corrección para no mostrarlas
-    calles_totales = sorted(df['CALLE_BRUTA'].unique())
+# --- 4. CARGAR TRABAJO PREVIO ---
+with st.sidebar:
+    st.header("📂 Cargar/Guardar")
+    uploaded = st.file_uploader("Subir correcciones.csv existente", type=["csv"])
+    if uploaded:
+        try:
+            df_prev = pd.read_csv(uploaded)
+            # Cargamos al diccionario
+            nuevas_reglas = dict(zip(df_prev['Original'], df_prev['Corregido']))
+            st.session_state['correcciones'].update(nuevas_reglas)
+            st.success(f"Cargadas {len(nuevas_reglas)} reglas.")
+        except:
+            st.error("Error leyendo archivo.")
+
+# --- INTERFAZ ---
+if nombres_unicos:
+    # Calculamos pendientes (los que no están en el diccionario de correcciones)
+    pendientes = [c for c in nombres_unicos if c not in st.session_state['correcciones']]
     
-    # Métrica de progreso
-    total_variantes = len(calles_totales)
-    corregidas = len([c for c in calles_totales if c in st.session_state['correcciones']])
-    
-    st.progress(corregidas / total_variantes)
-    st.caption(f"Progreso: {corregidas} variantes corregidas de {total_variantes} nombres únicos encontrados.")
-
     col1, col2 = st.columns([1, 2])
-
-    # --- PANEL IZQUIERDO: BUSCADOR Y SELECCIÓN ---
+    
+    # --- PANEL IZQUIERDO: TRABAJO ---
     with col1:
-        st.subheader("1. Buscar y Agrupar")
+        st.subheader("🛠️ Zona de Trabajo")
+        st.write(f"Nombres únicos encontrados: **{len(nombres_unicos)}**")
+        st.write(f"Pendientes de revisar: **{len(pendientes)}**")
         
-        # A. Buscador
-        busqueda = st.text_input("Escribe parte del nombre (Ej: CAFER)", key="search_box").upper()
+        # Buscador
+        busqueda = st.text_input("🔍 Buscar calle (Ej: CAFER):", key="search").upper()
         
-        # B. Filtrar opciones
         if busqueda:
-            opciones_visibles = [c for c in calles_totales if busqueda in c]
-        else:
-            opciones_visibles = []
-            st.info("Escribe algo arriba para buscar variantes.")
-
-        # C. Selector Multiusuario
-        # Pre-marcamos las que coinciden con la búsqueda pero dejamos desmarcar
-        seleccionadas = st.multiselect(
-            "Selecciona todas las variantes que sean la misma calle:",
-            options=opciones_visibles,
-            default=opciones_visibles # Por defecto selecciona todo lo que encontraste
-        )
-
-        # D. Input del Nombre Correcto
-        if seleccionadas:
-            # Sugerimos el nombre más largo o el primero como default
-            default_name = max(seleccionadas, key=len) 
-            nombre_oficial = st.text_input("¿Cómo se debe llamar esta calle?", value=default_name).upper().strip()
+            # Filtramos opciones que coincidan con la búsqueda
+            opciones = [c for c in nombres_unicos if busqueda in c]
             
-            if st.button("✅ UNIFICAR ESTAS CALLES", type="primary"):
-                # Guardamos en la memoria
-                for variante in seleccionadas:
-                    st.session_state['correcciones'][variante] = nombre_oficial
+            if opciones:
+                st.write("Selecciona las variantes a unificar:")
+                seleccionadas = st.multiselect(
+                    "Variantes encontradas:",
+                    options=opciones,
+                    default=opciones # Se auto-seleccionan para agilizar
+                )
                 
-                st.success(f"¡Listo! {len(seleccionadas)} variantes ahora son '{nombre_oficial}'.")
-                st.rerun() # Recargamos para limpiar
+                if seleccionadas:
+                    # Elegimos el nombre más largo como sugerencia
+                    sugerencia = max(seleccionadas, key=len)
+                    
+                    nombre_oficial = st.text_input("📝 Nombre Oficial Correcto:", value=sugerencia).upper()
+                    
+                    if st.button("✅ GUARDAR UNIFICACIÓN", type="primary"):
+                        # Guardamos en memoria
+                        for sucio in seleccionadas:
+                            st.session_state['correcciones'][sucio] = nombre_oficial
+                        st.success("¡Guardado!")
+                        st.rerun()
+            else:
+                st.warning("No se encontraron calles con ese nombre.")
+        else:
+            st.info("Escribe arriba para empezar a limpiar.")
 
-    # --- PANEL DERECHO: VISOR DE REGLAS Y DESCARGA ---
+    # --- PANEL DERECHO: RESULTADOS ---
     with col2:
-        st.subheader("2. Reglas Creadas")
+        st.subheader("📋 Reglas Generadas")
         
         if st.session_state['correcciones']:
-            # Convertimos dict a DataFrame para mostrar
+            # Convertimos a DataFrame
             df_reglas = pd.DataFrame(list(st.session_state['correcciones'].items()), columns=['Original', 'Corregido'])
             
-            # Mostramos tabla
-            st.dataframe(df_reglas.sort_values('Corregido'), height=400, use_container_width=True)
+            # Mostramos la tabla
+            st.dataframe(df_reglas.sort_values('Corregido'), use_container_width=True, height=500)
             
-            # --- BOTÓN DE DESCARGA (LO MÁS IMPORTANTE) ---
-            st.divider()
-            csv = df_reglas.to_csv(index=False).encode('utf-8')
-            
+            # BOTÓN DE DESCARGA
+            csv_data = df_reglas.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📥 DESCARGAR ARCHIVO FINAL (correcciones.csv)",
-                data=csv,
+                label="⬇️ DESCARGAR correcciones.csv (Fundamental)",
+                data=csv_data,
                 file_name="correcciones.csv",
                 mime="text/csv",
                 type="primary"
             )
-            st.warning("⚠️ Importante: Cada vez que termines una sesión, DESCARGA este archivo. La próxima vez, súbelo en el menú de la izquierda para continuar donde dejaste.")
         else:
-            st.info("Aún no has creado ninguna regla. Busca una calle a la izquierda y unifícala.")
+            st.write("Aquí aparecerá la lista de tus correcciones.")
 
 else:
-    st.error("No se encuentra 'datos.csv'. Súbelo a GitHub.")
+    st.error("No se pudo leer 'datos.csv'. Súbelo a GitHub.")
