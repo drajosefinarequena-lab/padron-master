@@ -7,23 +7,37 @@ from difflib import SequenceMatcher
 st.set_page_config(page_title="Limpieza T3F", layout="wide", page_icon="🧹")
 st.title("🧹 Centro de Comando y Limpieza - T3F")
 
-# --- 1. CARGA DE DATOS ---
-@st.cache_data
+# --- 1. CARGA DE DATOS BLINDADA ---
+@st.cache_data(ttl=60) # ttl=60 hace que se refresque cada 60 segundos (evita caché viejo)
 def cargar_datos():
     # A. Cargar Padrón Sucio
     try:
-        df = pd.read_csv("datos.csv", encoding='latin-1', sep=',')
-        if df.shape[1] < 2: df = pd.read_csv("datos.csv", encoding='latin-1', sep=';')
+        df = pd.read_csv("datos.csv", encoding='latin-1', sep=None, engine='python')
     except FileNotFoundError:
-        return None, None
+        return None, {}
 
-    # B. Cargar Diccionario de Correcciones (Si existe en GitHub)
+    # B. Cargar Diccionario de Correcciones
+    diccionario = {}
     try:
-        df_corr = pd.read_csv("correcciones.csv")
-        # Creamos un diccionario Python: { "Nombre Mal": "Nombre Bien" }
-        diccionario = dict(zip(df_corr.iloc[:,0], df_corr.iloc[:,1]))
-    except:
-        diccionario = {} # Si no existe el archivo, usamos diccionario vacío
+        # Intentamos leer detectando automáticamente el separador (; o ,)
+        # Asumimos que NO tiene encabezados si fallan los nombres, o leemos la primera columna como 'Mal' y la segunda como 'Bien'
+        df_corr = pd.read_csv("correcciones.csv", encoding='latin-1', sep=None, engine='python', header=None)
+        
+        # Si el archivo tiene títulos como "Original, Corregido", la primera fila sobra.
+        # Verificamos si la primera fila parece un encabezado
+        first_row = df_corr.iloc[0].astype(str).str.lower().tolist()
+        if "original" in first_row or "mal" in first_row:
+            df_corr = df_corr[1:] # Borramos la primera fila
+            
+        # Convertimos a diccionario
+        # Columna 0 = Lo que está Mal (Gardel Carlos)
+        # Columna 1 = Lo que está Bien (Carlos Gardel)
+        diccionario = dict(zip(df_corr.iloc[:,0].astype(str).str.upper().str.strip(), 
+                               df_corr.iloc[:,1].astype(str).str.upper().str.strip()))
+        
+    except Exception as e:
+        st.sidebar.error(f"Error leyendo correcciones.csv: {e}")
+        diccionario = {} 
     
     return df, diccionario
 
@@ -32,11 +46,11 @@ def normalizar_calle(texto, diccionario_externo):
     if not isinstance(texto, str): return ""
     calle = texto.upper().strip()
     
-    # Prioridad 1: Archivo de correcciones
+    # Prioridad 1: Archivo de correcciones (BÚSQUEDA EXACTA)
     if calle in diccionario_externo:
         return diccionario_externo[calle]
     
-    # Prioridad 2: Reglas Fijas (Casos críticos)
+    # Prioridad 2: Reglas Fijas
     fijas = {
         "AV SAN MARTIN": "AV SAN MARTIN", "AV. SAN MARTIN": "AV SAN MARTIN",
         "BOULEVARD SAN MARTIN": "BOULEVARD SAN MARTIN",
@@ -57,7 +71,7 @@ def normalizar_calle(texto, diccionario_externo):
 
 def extraer_direccion(texto, diccionario):
     if not isinstance(texto, str): return None, None, None
-    match = re.search(r"^([A-Z\s\.\d\(\)\-\/]+?)\s+(\d+)", texto.upper())
+    match = re.search(r"^([A-Z\s\.\d\(\)\-\/ñÑ]+?)\s+(\d+)", texto.upper())
     if match:
         raw = match.group(1).strip()
         altura = int(match.group(2))
@@ -68,49 +82,59 @@ def extraer_direccion(texto, diccionario):
 # --- INICIO APP ---
 df, diccionario_correcciones = cargar_datos()
 
+# --- DIAGNÓSTICO LATERAL (AQUÍ VERÁS SI SE CARGÓ BIEN) ---
+st.sidebar.header("🔍 Diagnóstico")
+if diccionario_correcciones:
+    st.sidebar.success(f"Reglas cargadas: {len(diccionario_correcciones)}")
+    
+    # Buscador para verificar si tu regla está activa
+    test = st.sidebar.text_input("Prueba una corrección (Ej: C GARDEL)").upper()
+    if test:
+        if test in diccionario_correcciones:
+            st.sidebar.success(f"✅ ¡La tengo! \n{test} -> {diccionario_correcciones[test]}")
+        else:
+            st.sidebar.error("❌ No encuentro esa regla en el archivo.")
+            st.sidebar.markdown("**Contenido de las primeras 5 reglas leídas:**")
+            st.sidebar.write(list(diccionario_correcciones.items())[:5])
+else:
+    st.sidebar.warning("No se detectaron reglas en correcciones.csv")
+
 if df is not None:
-    # Procesamos en memoria
+    # Procesamos
     if 'CALLE_LIMPIA' not in df.columns:
-        with st.spinner('Aplicando reglas de limpieza a toda la base...'):
+        with st.spinner('Limpiando base...'):
             datos = df['Domicilio'].apply(lambda x: pd.Series(extraer_direccion(x, diccionario_correcciones)))
             df['CALLE_ORIGINAL'] = datos[0]
             df['ALTURA'] = datos[1]
             df['CALLE_LIMPIA'] = datos[2]
             df = df.dropna(subset=['CALLE_LIMPIA'])
 
-    st.success(f"✅ Base Activa: {len(df)} registros. (Correcciones externas aplicadas: {len(diccionario_correcciones)})")
+    st.success(f"Base de Datos Activa: {len(df)} registros.")
     
-    tab1, tab2 = st.tabs(["🔍 PRUEBA DE BÚSQUEDA", "🛠️ HERRAMIENTA DE LIMPIEZA"])
+    tab1, tab2 = st.tabs(["🔍 VERIFICAR RESULTADOS", "🛠️ GENERAR NUEVAS REGLAS"])
     
-    # --- PESTAÑA 1: PARA VER CÓMO QUEDA ---
     with tab1:
         col1, col2 = st.columns([2,1])
         with col1:
-            modo = st.radio("Buscar por:", ["Calle", "Persona"], horizontal=True)
+            modo = st.radio("Ver por:", ["Calle Limpia", "Persona"], horizontal=True)
         
-        if modo == "Calle":
+        if modo == "Calle Limpia":
             calles = sorted(df['CALLE_LIMPIA'].unique())
-            c = st.selectbox("Selecciona una calle ya limpia:", calles)
+            c = st.selectbox("Selecciona Calle:", calles)
             if c:
                 f = df[df['CALLE_LIMPIA'] == c]
-                st.write(f"Vecinos en **{c}**: {len(f)}")
-                st.dataframe(f[['Apellido', 'Nombre', 'CALLE_LIMPIA', 'CALLE_ORIGINAL', 'ALTURA']].sort_values('ALTURA'))
+                # Mostramos la columna ORIGINAL para que veas que se unificaron
+                st.write(f"Afiliados en **{c}**: {len(f)}")
+                st.dataframe(f[['Apellido', 'Nombre', 'CALLE_ORIGINAL', 'ALTURA']].sort_values('ALTURA'))
         else:
             b = st.text_input("Apellido:")
             if b:
                 st.dataframe(df[df['Apellido'].str.contains(b.upper(), na=False)])
 
-    # --- PESTAÑA 2: MANTENIMIENTO INTELIGENTE ---
     with tab2:
         st.header("Generador de Reglas")
-        
-        # Calculamos cuántas calles ya arreglaste
-        arregladas = len(diccionario_correcciones)
-        st.info(f"👏 Actualmente tienes **{arregladas} reglas** de corrección activas en 'correcciones.csv'.")
-        st.markdown("Esta herramienta buscará **NUEVOS** errores que aún no estén en tu archivo de correcciones.")
-        
         if st.button("🔎 Buscar errores pendientes"):
-            with st.spinner("Analizando lo que falta corregir..."):
+            with st.spinner("Analizando..."):
                 calles_unicas = sorted(df['CALLE_ORIGINAL'].unique().astype(str))
                 sugerencias = []
                 procesados = set()
@@ -123,17 +147,15 @@ if df is not None:
                 for i, calle_a in enumerate(calles_unicas):
                     if i % 100 == 0: progress.progress(i/len(calles_unicas))
                     
-                    # SI YA ESTÁ CORREGIDA, LA SALTAMOS
-                    if calle_a in diccionario_correcciones: 
-                        continue
+                    # IGNORAR SI YA ESTÁ CORREGIDA
+                    if calle_a in diccionario_correcciones: continue
                     
                     if calle_a in procesados: continue
                     nm_a = clean_tmp(calle_a)
                     grupo = [calle_a]
                     
                     for calle_b in calles_unicas:
-                        if calle_b in diccionario_correcciones: continue # SALTAMOS TAMBIÉN LA COMPARADA
-                        
+                        if calle_b in diccionario_correcciones: continue
                         if calle_a == calle_b or calle_b in procesados: continue
                         if SequenceMatcher(None, nm_a, clean_tmp(calle_b)).ratio() > 0.85:
                             grupo.append(calle_b)
@@ -141,31 +163,20 @@ if df is not None:
                     
                     if len(grupo) > 1:
                         procesados.add(calle_a)
-                        # Sugerimos corrección automática
                         oficial = normalizar_calle(grupo[0], diccionario_correcciones)
                         for mala in grupo:
                             if mala not in diccionario_correcciones and mala != oficial:
                                 sugerencias.append({"Original": mala, "Corregido": oficial})
                 
                 progress.empty()
-                
                 if sugerencias:
                     df_sug = pd.DataFrame(sugerencias)
-                    st.warning(f"⚠️ Se encontraron {len(df_sug)} NUEVOS errores posibles.")
+                    st.warning(f"⚠️ {len(df_sug)} nuevos errores.")
                     st.dataframe(df_sug)
-                    
                     csv_nuevo = df_sug.to_csv(index=False, header=False).encode('utf-8')
-                    
-                    st.markdown("### ¿Qué hago ahora?")
-                    st.markdown("1. Descarga estos **nuevos** errores.")
-                    st.markdown("2. Abre tu archivo `correcciones.csv` (el que subiste antes) en Excel.")
-                    st.markdown("3. Pega estos nuevos datos al final de la lista.")
-                    st.markdown("4. Sube el `correcciones.csv` actualizado a GitHub.")
-                    
-                    st.download_button("⬇️ Descargar SOLO los nuevos errores", csv_nuevo, "nuevos_errores.csv", "text/csv")
+                    st.download_button("⬇️ Descargar nuevos", csv_nuevo, "nuevos_errores.csv", "text/csv")
                 else:
-                    st.balloons()
-                    st.success("¡Excelente! No se detectaron calles similares pendientes.")
+                    st.success("¡Todo limpio!")
 
 else:
-    st.warning("⚠️ Esperando archivo 'datos.csv'. Súbelo a GitHub.")
+    st.warning("Sube datos.csv")
