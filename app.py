@@ -1,134 +1,110 @@
 import streamlit as st
 import pandas as pd
 import re
-import io
 
-st.set_page_config(page_title="Editor Manual T3F", layout="wide", page_icon="✂️")
-st.title("✂️ Editor de Calles (Separa Alturas)")
+st.set_page_config(page_title="Separador de Direcciones", layout="wide", page_icon="🏗️")
+st.title("🏗️ Separador de Direcciones")
 st.markdown("""
-**Instrucciones:**
-1. Esta herramienta corta los números temporalmente para que veas solo los nombres de calle.
-2. Agrupa las variantes (ej: CAFERATA, CAFERETA) y dales un nombre oficial.
-3. Al final, descarga el archivo `correcciones.csv`.
-**Nota:** La altura de cada vecino se conserva intacta en la base de datos original.
+Esta herramienta toma tu columna de dirección mezclada y la separa en:
+**CALLE | ALTURA | RESTO (Piso, Depto, etc.)**
 """)
 
-# --- 1. GESTIÓN DE MEMORIA ---
-if 'correcciones' not in st.session_state:
-    st.session_state['correcciones'] = {}
-
-# --- 2. FUNCIÓN DE CORTE (LA TIJERA) ---
-def separar_calle_altura(texto):
-    if not isinstance(texto, str): return texto, 0
-    t = texto.upper().strip()
-    # Regex: Busca texto al principio y números al final
-    match = re.search(r"^(.+?)\s+(\d+)$", t)
+# --- 1. FUNCIÓN DE SEPARACIÓN (LA CIRUGÍA) ---
+def separar_direccion(texto):
+    if not isinstance(texto, str):
+        return pd.Series([None, None, None])
+    
+    texto = texto.upper().strip()
+    
+    # LÓGICA: Buscamos el ÚLTIMO número de la cadena que esté separado por espacio
+    # Ejemplo: "CAFFERATA 5472 CASEROS" -> Calle: CAFFERATA, Altura: 5472, Resto: CASEROS
+    # Regex: 
+    # ^(.+?)    -> (Grupo 1) Todo el texto del principio (Calle)
+    # \s+       -> Un espacio
+    # (\d+)     -> (Grupo 2) El número (Altura)
+    # \s*(.*)$  -> (Grupo 3) Lo que sobre al final (Localidad, piso, etc)
+    
+    match = re.search(r"^(.+?)\s+(\d+)\s*(.*)$", texto)
+    
     if match:
         calle = match.group(1).strip()
-        return calle
-    return t # Si no tiene número, devuelve todo el texto
+        altura = match.group(2).strip()
+        resto = match.group(3).strip()
+        return pd.Series([calle, altura, resto])
+    else:
+        # Si no encontramos número, devolvemos todo en calle y lo demás vacío
+        return pd.Series([texto, None, None])
 
-# --- 3. CARGA DE DATOS ---
-@st.cache_data
-def cargar_y_cortar():
+# --- 2. CARGA Y PROCESAMIENTO ---
+uploaded_file = st.file_uploader("Sube tu archivo sucio (CSV o Excel)", type=["csv", "xlsx"])
+
+if uploaded_file:
+    # Cargar archivo
     try:
-        df = pd.read_csv("datos.csv", encoding='latin-1', sep=None, engine='python')
-        
-        # Detectamos columna domicilio
-        col_dom = 'Domicilio' if 'Domicilio' in df.columns else df.columns[0]
-        
-        # APLICAMOS LA TIJERA: Creamos una columna solo con nombres
-        df['NOMBRE_SOLO'] = df[col_dom].apply(separar_calle_altura)
-        
-        # Eliminamos vacíos y ordenamos
-        nombres_unicos = sorted(df['NOMBRE_SOLO'].dropna().unique())
-        return nombres_unicos
-    except:
-        return []
-
-nombres_unicos = cargar_y_cortar()
-
-# --- 4. CARGAR TRABAJO PREVIO ---
-with st.sidebar:
-    st.header("📂 Cargar/Guardar")
-    uploaded = st.file_uploader("Subir correcciones.csv existente", type=["csv"])
-    if uploaded:
-        try:
-            df_prev = pd.read_csv(uploaded)
-            # Cargamos al diccionario
-            nuevas_reglas = dict(zip(df_prev['Original'], df_prev['Corregido']))
-            st.session_state['correcciones'].update(nuevas_reglas)
-            st.success(f"Cargadas {len(nuevas_reglas)} reglas.")
-        except:
-            st.error("Error leyendo archivo.")
-
-# --- INTERFAZ ---
-if nombres_unicos:
-    # Calculamos pendientes (los que no están en el diccionario de correcciones)
-    pendientes = [c for c in nombres_unicos if c not in st.session_state['correcciones']]
-    
-    col1, col2 = st.columns([1, 2])
-    
-    # --- PANEL IZQUIERDO: TRABAJO ---
-    with col1:
-        st.subheader("🛠️ Zona de Trabajo")
-        st.write(f"Nombres únicos encontrados: **{len(nombres_unicos)}**")
-        st.write(f"Pendientes de revisar: **{len(pendientes)}**")
-        
-        # Buscador
-        busqueda = st.text_input("🔍 Buscar calle (Ej: CAFER):", key="search").upper()
-        
-        if busqueda:
-            # Filtramos opciones que coincidan con la búsqueda
-            opciones = [c for c in nombres_unicos if busqueda in c]
-            
-            if opciones:
-                st.write("Selecciona las variantes a unificar:")
-                seleccionadas = st.multiselect(
-                    "Variantes encontradas:",
-                    options=opciones,
-                    default=opciones # Se auto-seleccionan para agilizar
-                )
-                
-                if seleccionadas:
-                    # Elegimos el nombre más largo como sugerencia
-                    sugerencia = max(seleccionadas, key=len)
-                    
-                    nombre_oficial = st.text_input("📝 Nombre Oficial Correcto:", value=sugerencia).upper()
-                    
-                    if st.button("✅ GUARDAR UNIFICACIÓN", type="primary"):
-                        # Guardamos en memoria
-                        for sucio in seleccionadas:
-                            st.session_state['correcciones'][sucio] = nombre_oficial
-                        st.success("¡Guardado!")
-                        st.rerun()
-            else:
-                st.warning("No se encontraron calles con ese nombre.")
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file, encoding='latin-1', sep=None, engine='python')
         else:
-            st.info("Escribe arriba para empezar a limpiar.")
+            df = pd.read_excel(uploaded_file)
+            
+        st.success(f"Archivo cargado: {len(df)} filas.")
+    except Exception as e:
+        st.error(f"Error leyendo archivo: {e}")
+        st.stop()
 
-    # --- PANEL DERECHO: RESULTADOS ---
-    with col2:
-        st.subheader("📋 Reglas Generadas")
-        
-        if st.session_state['correcciones']:
-            # Convertimos a DataFrame
-            df_reglas = pd.DataFrame(list(st.session_state['correcciones'].items()), columns=['Original', 'Corregido'])
+    # Detectar columna domicilio
+    cols = df.columns.tolist()
+    # Buscamos si existe 'Domicilio' o 'Direccion', sino usamos la primera
+    col_dom = next((c for c in cols if 'DOMICILIO' in c.upper() or 'DIRECCION' in c.upper()), cols[0])
+    
+    st.write(f"Separando datos de la columna: **{col_dom}**")
+
+    if st.button("🚀 SEPARAR EN COLUMNAS", type="primary"):
+        with st.spinner("Realizando cirugía a las direcciones..."):
             
-            # Mostramos la tabla
-            st.dataframe(df_reglas.sort_values('Corregido'), use_container_width=True, height=500)
+            # APLICAMOS LA FUNCIÓN
+            nuevas_cols = df[col_dom].apply(separar_direccion)
+            nuevas_cols.columns = ['CALLE_LIMPIA', 'ALTURA', 'DETALLES_EXTRA']
             
-            # BOTÓN DE DESCARGA
-            csv_data = df_reglas.to_csv(index=False).encode('utf-8')
+            # UNIMOS AL DATAFRAME ORIGINAL
+            df_final = pd.concat([df, nuevas_cols], axis=1)
+            
+            # Agregamos columnas vacías que pediste para completar en Excel
+            if 'LOCALIDAD' not in df_final.columns:
+                df_final['LOCALIDAD'] = "Tres de Febrero" # Valor por defecto
+            if 'PARTIDO' not in df_final.columns:
+                df_final['PARTIDO'] = "Tres de Febrero"
+            if 'CP' not in df_final.columns:
+                df_final['CP'] = ""
+
+            # REORDENAMOS PARA QUE SEA CÓMODO EDITAR
+            # Ponemos las columnas nuevas al principio junto con Nombre/Apellido
+            cols_prioridad = ['Apellido', 'Nombre', 'CALLE_LIMPIA', 'ALTURA', 'DETALLES_EXTRA', 'LOCALIDAD', 'CP']
+            cols_existentes = [c for c in cols_prioridad if c in df_final.columns]
+            cols_resto = [c for c in df_final.columns if c not in cols_existentes]
+            
+            df_export = df_final[cols_existentes + cols_resto]
+
+            st.balloons()
+            st.subheader("Vista Previa del Resultado:")
+            st.dataframe(df_export.head())
+
+            # BOTÓN DESCARGA
+            csv = df_export.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="⬇️ DESCARGAR correcciones.csv (Fundamental)",
-                data=csv_data,
-                file_name="correcciones.csv",
-                mime="text/csv",
-                type="primary"
+                label="📥 DESCARGAR ARCHIVO ESTRUCTURADO (Excel)",
+                data=csv,
+                file_name="base_estructurada.csv",
+                mime="text/csv"
             )
-        else:
-            st.write("Aquí aparecerá la lista de tus correcciones.")
+            
+            st.success("""
+            **¡PASOS SIGUIENTES!**
+            1. Descarga este archivo.
+            2. Ábrelo en Excel.
+            3. Ordena por la columna **'CALLE_LIMPIA'**.
+            4. ¡Ahora verás todos los 'CAFFERATA' juntos! Corrige los nombres masivamente arrastrando celdas.
+            5. Cuando termines, guarda ese archivo y será tu nueva **Base Maestra**.
+            """)
 
 else:
-    st.error("No se pudo leer 'datos.csv'. Súbelo a GitHub.")
+    st.info("Sube un archivo para comenzar.")
