@@ -2,153 +2,116 @@ import streamlit as st
 import pandas as pd
 import re
 
-st.set_page_config(page_title="Padrón Unificado T3F", layout="wide")
-st.title("📍 Padrón Unificado - Tres de Febrero")
+st.set_page_config(page_title="Editor Manual T3F", layout="wide", page_icon="✏️")
+st.title("✏️ El Unificador Manual - Tres de Febrero")
+st.markdown("Esta herramienta te permite seleccionar variantes de una calle y unificarlas bajo un solo nombre oficial.")
 
-# --- 1. CARGA DE DATOS ---
+# --- 1. GESTIÓN DE ESTADO (MEMORIA TEMPORAL) ---
+if 'correcciones' not in st.session_state:
+    st.session_state['correcciones'] = {}
+
+# --- 2. CARGA DE DATOS ---
 @st.cache_data
-def cargar_datos():
+def cargar_datos_crudos():
     try:
-        # Intentamos leer el archivo
         df = pd.read_csv("datos.csv", encoding='latin-1', sep=None, engine='python')
+        # Limpieza preliminar solo para sacar calles vacías
+        df['CALLE_BRUTA'] = df['Domicilio'].apply(lambda x: re.search(r"^([A-Z\s\.\d\ñ\Ñ]+)", str(x).upper()).group(1).strip() if re.search(r"^([A-Z\s\.\d\ñ\Ñ]+)", str(x).upper()) else None)
+        df = df.dropna(subset=['CALLE_BRUTA'])
         return df
-    except:
+    except Exception as e:
         return None
 
-# --- 2. LA APLANADORA (Función de Fuerza Bruta) ---
-def unificar_a_la_fuerza(texto):
-    if not isinstance(texto, str): return ""
-    # 1. Normalización básica
-    calle = texto.upper().strip()
-    calle = calle.replace(".", " ") # C. GARDEL -> C  GARDEL
-    
-    # 2. REGLAS DE ORO (Si contiene la palabra clave, se reescribe TOTALMENTE)
-    # El orden importa: las reglas más específicas van primero.
+df = cargar_datos_crudos()
 
-    # --- CASO SAN MARTÍN (Distinguir Boulevard de Avenida) ---
-    if "SAN MARTIN" in calle:
-        if "BV" in calle or "BOULEVARD" in calle or "B AL" in calle: # "B AL" por si dice B AL RIO
-            return "BOULEVARD SAN MARTIN"
-        else:
-            return "AV SAN MARTIN"
+# --- 3. LOGICA DE CARGA DE TRABAJO PREVIO ---
+uploaded_file = st.sidebar.file_uploader("📂 Cargar trabajo previo (correcciones.csv)", type=["csv"])
+if uploaded_file is not None:
+    try:
+        df_prev = pd.read_csv(uploaded_file)
+        # Cargamos al estado solo si es la primera vez
+        if not st.session_state['correcciones']:
+            st.session_state['correcciones'] = dict(zip(df_prev['Original'], df_prev['Corregido']))
+            st.sidebar.success(f"Se cargaron {len(st.session_state['correcciones'])} reglas previas.")
+    except:
+        st.sidebar.error("Error cargando archivo previo.")
 
-    # --- CASOS CRÍTICOS (GARDEL, MITRE, ETC) ---
-    # Si aparece "GARDEL" (sea C. Gardel, Carlos Gardel, Gardel Carlos) -> CARLOS GARDEL
-    if "GARDEL" in calle: return "CARLOS GARDEL"
-    
-    # Si aparece "MITRE" (Bme Mitre, B. Mitre, Bartolome Mitre) -> BARTOLOME MITRE
-    if "MITRE" in calle: return "BARTOLOME MITRE"
-    
-    if "ANCHORDO" in calle: return "DR ENRIQUE ANCHORDOQUI" # Agarra Anchordoqui, Anchordoquy...
-    
-    if "ALVEAR" in calle: return "MARCELO T DE ALVEAR"
-    
-    if "URQUIZA" in calle: return "URQUIZA"
-    
-    if "ROSAS" in calle and "JUAN" in calle: return "JUAN MANUEL DE ROSAS" # Para no confundir con otras Rosas
-    if "ROSAS" in calle and "BRIG" in calle: return "JUAN MANUEL DE ROSAS"
-    
-    if "GLADIOLO" in calle: return "DE LOS GLADIOLOS"
-    
-    if "PELLEGRINI" in calle: return "CARLOS PELLEGRINI"
-    if "PELEGRINI" in calle: return "CARLOS PELLEGRINI" # Por si escribieron mal
-    
-    if "YRIGOYEN" in calle or "IRIGOYEN" in calle: return "HIPOLITO YRIGOYEN"
-    
-    if "PAZ" in calle and ("GRAL" in calle or "GENERAL" in calle): return "AV GENERAL PAZ"
-    
-    if "AMARILLO" in calle and ("CERRO" in calle or "C " in calle): return "CERRO AMARILLO"
-    
-    if "BESARES" in calle: return "BESARES" # A veces ponen "Gral Besares"
-    
-    # 3. SI NO CUMPLE NINGUNA REGLA DE ORO, LIMPIEZA GENÉRICA
-    # Quitamos prefijos comunes para el resto de las calles
-    basura = ["AV.", "AV ", "AVENIDA ", "CALLE ", "DR.", "DR ", "GRAL.", "GRAL ", "PJE.", "PJE "]
-    for b in basura:
-        if calle.startswith(b):
-            calle = calle.replace(b, "")
-            
-    return calle.strip()
-
-# --- 3. EXTRACCIÓN ---
-def procesar_direccion(texto):
-    if not isinstance(texto, str): return None, None, None
-    # Buscamos texto + numeros
-    match = re.search(r"^([A-Z\s\.\d\ñ\Ñ]+?)\s+(\d+)", texto.upper())
-    if match:
-        raw = match.group(1).strip()
-        altura = int(match.group(2))
-        # Aplicamos la Aplanadora
-        clean = unificar_a_la_fuerza(raw)
-        return raw, altura, clean
-    return None, None, None
-
-# --- INICIO APP ---
-df = cargar_datos()
+# --- INTERFAZ PRINCIPAL ---
 
 if df is not None:
-    # Procesar
-    if 'CALLE_UNIFICADA' not in df.columns:
-        with st.spinner('Aplicando reglas de unificación...'):
-            datos = df['Domicilio'].apply(process_address_lambda_wrapper := lambda x: pd.Series(procesar_direccion(x)))
-            df['CALLE_ORIGINAL'] = datos[0]
-            df['ALTURA'] = datos[1]
-            df['CALLE_UNIFICADA'] = datos[2]
-            df = df.dropna(subset=['CALLE_UNIFICADA'])
+    # Filtramos las calles que YA tienen corrección para no mostrarlas
+    calles_totales = sorted(df['CALLE_BRUTA'].unique())
+    
+    # Métrica de progreso
+    total_variantes = len(calles_totales)
+    corregidas = len([c for c in calles_totales if c in st.session_state['correcciones']])
+    
+    st.progress(corregidas / total_variantes)
+    st.caption(f"Progreso: {corregidas} variantes corregidas de {total_variantes} nombres únicos encontrados.")
 
-    st.success(f"✅ Base lista: {len(df)} vecinos.")
-    
-    # --- PRUEBA DE FUEGO ---
-    st.markdown("### 🔎 Prueba de Unificación")
-    st.markdown("Escribe 'GARDEL' o 'MITRE' abajo para ver si se unificaron.")
-    
-    col_search, col_result = st.columns(2)
-    with col_search:
-        filtro_prueba = st.text_input("Buscar calle (Ej: MITRE):").upper()
-    
-    if filtro_prueba:
-        # Filtramos por el nombre original para ver qué variantes había
-        resultados = df[df['CALLE_ORIGINAL'].str.contains(filtro_prueba, na=False)]
-        if not resultados.empty:
-            st.write(f"Se encontraron **{len(resultados)}** registros originales con '{filtro_prueba}'.")
-            st.write("Mira la columna **CALLE_UNIFICADA**. Debería decir lo mismo para todos.")
-            
-            # Mostramos tabla resumen
-            st.dataframe(resultados[['CALLE_ORIGINAL', 'CALLE_UNIFICADA', 'ALTURA']].head(20))
-        else:
-            st.warning("No encontré esa calle en la base original.")
-            
-    st.divider()
-    
-    # --- EL BUSCADOR PRINCIPAL ---
-    st.subheader("📍 Buscador Operativo")
-    
-    tab1, tab2 = st.tabs(["🏠 Por Calle", "👤 Por Persona"])
-    
-    with tab1:
-        # Usamos la lista de calles UNIFICADAS para el selector
-        lista_calles = sorted(df['CALLE_UNIFICADA'].unique())
-        calle_input = st.selectbox("Selecciona Calle:", lista_calles)
-        altura_input = st.number_input("Altura:", step=100)
+    col1, col2 = st.columns([1, 2])
+
+    # --- PANEL IZQUIERDO: BUSCADOR Y SELECCIÓN ---
+    with col1:
+        st.subheader("1. Buscar y Agrupar")
         
-        if calle_input:
-            final = df[df['CALLE_UNIFICADA'] == calle_input]
-            
-            if altura_input > 0:
-                final = final[(final['ALTURA'] >= altura_input - 300) & (final['ALTURA'] <= altura_input + 300)]
-                final['Distancia'] = abs(final['ALTURA'] - altura_input)
-                final = final.sort_values('Distancia')
-            else:
-                final = final.sort_values('ALTURA')
-                
-            st.write(f"Vecinos encontrados: {len(final)}")
-            st.dataframe(final[['Apellido', 'Nombre', 'CALLE_UNIFICADA', 'ALTURA', 'Domicilio']])
+        # A. Buscador
+        busqueda = st.text_input("Escribe parte del nombre (Ej: CAFER)", key="search_box").upper()
+        
+        # B. Filtrar opciones
+        if busqueda:
+            opciones_visibles = [c for c in calles_totales if busqueda in c]
+        else:
+            opciones_visibles = []
+            st.info("Escribe algo arriba para buscar variantes.")
 
-    with tab2:
-        apellido = st.text_input("Apellido:")
-        if apellido:
-            res = df[df['Apellido'].str.contains(apellido.upper(), na=False)]
-            st.dataframe(res[['Apellido', 'Nombre', 'CALLE_UNIFICADA', 'ALTURA']])
+        # C. Selector Multiusuario
+        # Pre-marcamos las que coinciden con la búsqueda pero dejamos desmarcar
+        seleccionadas = st.multiselect(
+            "Selecciona todas las variantes que sean la misma calle:",
+            options=opciones_visibles,
+            default=opciones_visibles # Por defecto selecciona todo lo que encontraste
+        )
+
+        # D. Input del Nombre Correcto
+        if seleccionadas:
+            # Sugerimos el nombre más largo o el primero como default
+            default_name = max(seleccionadas, key=len) 
+            nombre_oficial = st.text_input("¿Cómo se debe llamar esta calle?", value=default_name).upper().strip()
+            
+            if st.button("✅ UNIFICAR ESTAS CALLES", type="primary"):
+                # Guardamos en la memoria
+                for variante in seleccionadas:
+                    st.session_state['correcciones'][variante] = nombre_oficial
+                
+                st.success(f"¡Listo! {len(seleccionadas)} variantes ahora son '{nombre_oficial}'.")
+                st.rerun() # Recargamos para limpiar
+
+    # --- PANEL DERECHO: VISOR DE REGLAS Y DESCARGA ---
+    with col2:
+        st.subheader("2. Reglas Creadas")
+        
+        if st.session_state['correcciones']:
+            # Convertimos dict a DataFrame para mostrar
+            df_reglas = pd.DataFrame(list(st.session_state['correcciones'].items()), columns=['Original', 'Corregido'])
+            
+            # Mostramos tabla
+            st.dataframe(df_reglas.sort_values('Corregido'), height=400, use_container_width=True)
+            
+            # --- BOTÓN DE DESCARGA (LO MÁS IMPORTANTE) ---
+            st.divider()
+            csv = df_reglas.to_csv(index=False).encode('utf-8')
+            
+            st.download_button(
+                label="📥 DESCARGAR ARCHIVO FINAL (correcciones.csv)",
+                data=csv,
+                file_name="correcciones.csv",
+                mime="text/csv",
+                type="primary"
+            )
+            st.warning("⚠️ Importante: Cada vez que termines una sesión, DESCARGA este archivo. La próxima vez, súbelo en el menú de la izquierda para continuar donde dejaste.")
+        else:
+            st.info("Aún no has creado ninguna regla. Busca una calle a la izquierda y unifícala.")
 
 else:
-    st.error("⚠️ Sube datos.csv a GitHub")
+    st.error("No se encuentra 'datos.csv'. Súbelo a GitHub.")
