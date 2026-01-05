@@ -5,13 +5,17 @@ from difflib import SequenceMatcher
 
 # Configuración
 st.set_page_config(page_title="Editor Maestro T3F", layout="wide", page_icon="🛠️")
-st.title("🛠️ Padrón Inteligente con Edición Manual")
+st.title("🛠️ Padrón Inteligente: Flujo de Trabajo")
 
 # --- 1. GESTIÓN DE ESTADO ---
 if 'mapa_correcciones' not in st.session_state:
     st.session_state['mapa_correcciones'] = {}
 if 'datos_cargados' not in st.session_state:
     st.session_state['datos_cargados'] = False
+
+# NUEVO: Estado para recordar qué grupos ya revisaste y ocultarlos
+if 'revisados' not in st.session_state:
+    st.session_state['revisados'] = set()
 
 # --- 2. CARGA DE DATOS ---
 @st.cache_data
@@ -32,7 +36,6 @@ def cargar_datos_iniciales():
 def expandir_abreviaturas(texto):
     if not isinstance(texto, str): return ""
     calle = texto.upper().strip()
-    # Limpieza básica
     calle = re.sub(r"[.]", " ", calle)
     calle = re.sub(r"\s+", " ", calle)
     
@@ -48,7 +51,6 @@ def expandir_abreviaturas(texto):
     for patron, reemplazo in reemplazos.items():
         calle = re.sub(patron, reemplazo, calle)
 
-    # Reglas específicas
     calle = re.sub(r"\bR\s+(JACHAL|CUARTO|NEGRO|SALADO|DIAMANTE|TERCERO)\b", r"RIO \1", calle)
     calle = re.sub(r"\bRIO\s+(4|IV)\b", "RIO CUARTO", calle)
     calle = re.sub(r"\bRIO\s+(3|III)\b", "RIO TERCERO", calle)
@@ -61,7 +63,6 @@ def expandir_abreviaturas(texto):
     
     return calle.strip()
 
-# Cacheamos esta función para que no sea lenta, pero la ejecutaremos siempre
 @st.cache_data
 def crear_columna_preprocesada(df):
     return df['CALLE'].astype(str).apply(expandir_abreviaturas)
@@ -82,7 +83,6 @@ def generar_grupos_iniciales(lista_calles, umbral=0.70):
         procesados.add(base)
         mapa[base] = base 
         
-        # Comparar con los siguientes 500 para optimizar velocidad
         rango = calles_ordenadas[i+1 : i+500]
         for candidata in rango:
             if candidata in procesados: continue
@@ -101,90 +101,107 @@ if df is not None:
         st.error("Falta columna 'CALLE'")
         st.stop()
 
-    # --- PASO CRÍTICO: Crear CALLE_PRE SIEMPRE ---
-    # Esto asegura que la columna exista antes de usarse, en cada recarga
     df['CALLE_PRE'] = crear_columna_preprocesada(df)
 
-    # --- FASE 1: DETECCIÓN DE GRUPOS (Solo corre la primera vez) ---
+    # --- FASE 1: DETECCIÓN (Solo primera vez) ---
     if not st.session_state['datos_cargados']:
-        with st.spinner("Detectando grupos automáticos... (Esto toma unos segundos)"):
+        with st.spinner("Inicializando motor de inteligencia..."):
             unicas = df['CALLE_PRE'].unique().tolist()
-            # Guardamos el mapa inicial
             st.session_state['mapa_correcciones'] = generar_grupos_iniciales(unicas, umbral=0.70)
             st.session_state['datos_cargados'] = True
             st.rerun()
 
-    # --- LOGICA DE MAPEO EN VIVO ---
-    # Aquí es donde fallaba antes: ahora df['CALLE_PRE'] ya existe seguro
+    # --- APLICAR MAPA EN VIVO ---
     df['CALLE_OFICIAL'] = df['CALLE_PRE'].map(st.session_state['mapa_correcciones']).fillna(df['CALLE_PRE'])
     df['ALTURA_NUM'] = pd.to_numeric(df['ALTURA'], errors='coerce').fillna(0).astype(int)
 
     # --- INTERFAZ ---
-    tab_editor, tab_audit, tab_final = st.tabs(["🛠️ EDITOR DE GRUPOS", "🔎 VERIFICAR", "📥 DESCARGAR"])
+    tab_editor, tab_audit, tab_final = st.tabs(["📝 LISTA DE TAREAS (EDITOR)", "🔎 VERIFICAR", "📥 DESCARGAR"])
 
     # ---------------------------------------------------------
-    # PESTAÑA 1: EDITOR MANUAL
+    # PESTAÑA 1: EDITOR (TAREAS PENDIENTES)
     # ---------------------------------------------------------
     with tab_editor:
-        st.header("Control Humano de Grupos")
-        st.markdown("Aquí puedes arreglar lo que la IA hizo mal. Separa calles mezcladas o une variantes.")
-
-        # Preparar datos para el selector
+        st.header("Control de Calidad: Calle por Calle")
+        
+        # 1. Preparar listas
         grupos_dict = {}
         for variante, oficial in st.session_state['mapa_correcciones'].items():
             if oficial not in grupos_dict: grupos_dict[oficial] = []
             grupos_dict[oficial].append(variante)
         
-        lista_grupos = sorted(grupos_dict.keys())
+        total_grupos = len(grupos_dict)
+        # Filtramos los que NO están en revisados
+        pendientes = [g for g in sorted(grupos_dict.keys()) if g not in st.session_state['revisados']]
         
-        col_sel, col_info = st.columns([2, 1])
-        with col_sel:
-            grupo_lider = st.selectbox("1. Elige el GRUPO a editar:", lista_grupos)
+        # BARRA DE PROGRESO
+        hechos = total_grupos - len(pendientes)
+        if total_grupos > 0:
+            progreso = hechos / total_grupos
+            st.progress(progreso, text=f"Progreso: {hechos} revisados de {total_grupos} totales.")
         
-        if grupo_lider:
-            miembros_actuales = grupos_dict.get(grupo_lider, [])
+        col_reset, col_vacio = st.columns([1, 4])
+        if col_reset.button("🔄 Mostrar ocultos"):
+            st.session_state['revisados'] = set()
+            st.rerun()
+
+        st.divider()
+
+        # 2. SELECTOR (Solo muestra pendientes)
+        if pendientes:
+            st.success(f"Te quedan **{len(pendientes)}** calles por revisar.")
             
-            with st.container(border=True):
-                st.subheader(f"Grupo: {grupo_lider}")
+            col_sel, col_info = st.columns([2, 1])
+            with col_sel:
+                grupo_lider = st.selectbox("👉 Selecciona siguiente calle:", pendientes)
+            
+            if grupo_lider:
+                miembros_actuales = grupos_dict.get(grupo_lider, [])
                 
-                # A. ELIMINAR
-                st.write("**A. Miembros actuales (Desmarca para sacar del grupo):**")
-                seleccionados = st.multiselect(
-                    "Calles en este grupo:",
-                    options=miembros_actuales,
-                    default=miembros_actuales,
-                    key="multi_miembros"
-                )
-                borrados = set(miembros_actuales) - set(seleccionados)
-                
-                # B. AGREGAR
-                st.write("**B. Agregar calles a este grupo:**")
-                todas_las_calles = sorted(list(st.session_state['mapa_correcciones'].keys()))
-                # Sugerimos calles que NO están en este grupo
-                candidatos = [c for c in todas_las_calles if c not in seleccionados]
-                
-                nuevos = st.multiselect("Buscar calles para sumar:", options=candidatos, placeholder="Escribe para buscar...")
-                
-                st.divider()
-                if st.button("💾 GUARDAR CAMBIOS", type="primary"):
-                    # Procesar borrados -> Se vuelven independientes
-                    for b in borrados:
-                        st.session_state['mapa_correcciones'][b] = b 
-                        st.toast(f"Se liberó: {b}")
+                with st.container(border=True):
+                    st.subheader(f"Editando: {grupo_lider}")
                     
-                    # Procesar nuevos -> Se unen al líder
-                    for n in nuevos:
-                        st.session_state['mapa_correcciones'][n] = grupo_lider
-                        st.toast(f"Se agregó: {n}")
+                    # A. ELIMINAR
+                    st.write("**A. Variantes actuales (Desmarca las incorrectas):**")
+                    seleccionados = st.multiselect(
+                        "Calles agrupadas:",
+                        options=miembros_actuales,
+                        default=miembros_actuales,
+                        key="multi_miembros"
+                    )
+                    borrados = set(miembros_actuales) - set(seleccionados)
                     
-                    st.success("¡Actualizado!")
-                    st.rerun()
+                    # B. AGREGAR
+                    st.write("**B. Buscar calles perdidas para sumar:**")
+                    todas = sorted(list(st.session_state['mapa_correcciones'].keys()))
+                    candidatos = [c for c in todas if c not in seleccionados]
+                    nuevos = st.multiselect("Agregar manual:", options=candidatos, placeholder="Escribe para buscar...")
+                    
+                    st.divider()
+                    
+                    # BOTÓN DE ACCIÓN
+                    # "Confirmar y Ocultar"
+                    if st.button("✅ CONFIRMAR Y FINALIZAR ESTA CALLE", type="primary"):
+                        # 1. Aplicar cambios lógicos
+                        for b in borrados:
+                            st.session_state['mapa_correcciones'][b] = b 
+                        for n in nuevos:
+                            st.session_state['mapa_correcciones'][n] = grupo_lider
+                        
+                        # 2. MARCAR COMO REVISADO (MAGIA)
+                        st.session_state['revisados'].add(grupo_lider)
+                        
+                        st.toast(f"Calle '{grupo_lider}' procesada y archivada.")
+                        st.rerun() # Al recargar, desaparece de la lista 'pendientes'
+        else:
+            st.balloons()
+            st.success("¡Felicidades! Has revisado todas las calles.")
 
     # ---------------------------------------------------------
     # PESTAÑA 2: VERIFICAR
     # ---------------------------------------------------------
     with tab_audit:
-        st.subheader("Buscador de Resultados")
+        st.subheader("Verificar cómo queda el padrón")
         col1, col2 = st.columns([2,1])
         with col1:
             finales = sorted(df['CALLE_OFICIAL'].unique())
@@ -197,7 +214,7 @@ if df is not None:
             if alt_ver > 0:
                 res = res[(res['ALTURA_NUM'] >= alt_ver - 200) & (res['ALTURA_NUM'] <= alt_ver + 200)]
             
-            st.write(f"Total registros: {len(res)}")
+            st.write(f"Registros: {len(res)}")
             cols_ver = ['APELLIDO', 'NOMBRE', 'DNI', 'CALLE_OFICIAL', 'ALTURA_NUM', 'CALLE']
             cols_ver = [c for c in cols_ver if c in df.columns]
             st.dataframe(res[cols_ver])
@@ -206,12 +223,14 @@ if df is not None:
     # PESTAÑA 3: DESCARGAR
     # ---------------------------------------------------------
     with tab_final:
-        st.header("Descargar Trabajo Final")
+        st.header("Descarga Final")
+        st.write("Solo descarga cuando hayas terminado de revisar todo.")
+        
         cols_exp = ['APELLIDO', 'NOMBRE', 'DNI', 'CALLE_OFICIAL', 'ALTURA_NUM', 'CALLE', 'ALTURA']
         cols_exp = [c for c in cols_exp if c in df.columns]
         
         csv = df[cols_exp].to_csv(index=False).encode('latin-1', errors='replace')
-        st.download_button("📥 DESCARGAR CSV FINAL", csv, "padron_maestro.csv", "text/csv", type="primary")
+        st.download_button("📥 DESCARGAR PADRÓN MAESTRO", csv, "padron_maestro.csv", "text/csv", type="primary")
 
 else:
-    st.error("No se pudo cargar el archivo. Verifica que 'datos_procesados - datos_procesados (1).csv' esté en GitHub.")
+    st.error("Falta el archivo en GitHub.")
