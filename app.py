@@ -1,17 +1,3 @@
-¡Tienes toda la razón! El error que ves (SyntaxError) sucede porque copiaste el texto de mi explicación dentro del archivo de código. La computadora intentó leer mi explicación en español como si fuera lenguaje de programación Python y, obviamente, no lo entendió.
-
-Para solucionarlo, debes borrar todo lo que hay actualmente en tu archivo app.py y pegar únicamente el siguiente bloque de código.
-
-Sigue estos pasos:
-
-Abre tu archivo app.py.
-
-Borra todo el contenido (deja el archivo en blanco).
-
-Copia y pega solo el código que te dejo aquí abajo:
-
-Python
-
 import streamlit as st
 import pandas as pd
 import re
