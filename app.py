@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
 import re
-import io
 
 # Configuración de la página
-st.set_page_config(page_title="Limpieza de Padrón", layout="wide")
+st.set_page_config(page_title="Limpieza y Edición de Padrón", layout="wide")
 
-st.title("Procesador de Padrón")
-st.markdown("Sube tu archivo `datos.csv` para separar domicilios y corregir nombres de calles.")
+st.title("Procesador y Editor de Padrón")
+st.markdown("1. Sube tu archivo `datos.csv`.\n2. El sistema separará calles y alturas automáticamente.\n3. **Edita manualmente** cualquier error en la tabla de abajo.\n4. Descarga el archivo final.")
 
 # ---------------------------------------------------------
 # 1. CARGA DE ARCHIVO
@@ -24,127 +23,124 @@ localities_to_remove = [
     '11 DE SEPTIEMBRE', 'CHURRUCA', 'VILLA RAFFO', 'NO CONSTA'
 ]
 
-def procesar_domicilio_completo(domicilio_str):
-    if not isinstance(domicilio_str, str):
-        return pd.Series([None, None, None, None, None])
+@st.cache_data
+def procesar_archivo(file):
+    # Leemos el archivo
+    df = pd.read_csv(file)
     
-    # --- PASO A: Separar componentes básicos ---
-    parts = [p.strip() for p in domicilio_str.split(',')]
-    
-    # Eliminar 'TRES DE FEBRERO' del final
-    if parts and parts[-1] == 'TRES DE FEBRERO':
-        parts.pop()
-    
-    # Eliminar Localidad del final
-    if parts and parts[-1] in localities_to_remove:
-        parts.pop()
+    if 'Domicilio' not in df.columns:
+        return None, "Error: No se encontró la columna 'Domicilio'"
+
+    def limpiar_fila(domicilio_str):
+        if not isinstance(domicilio_str, str):
+            return pd.Series([None, None, None, None, None])
         
-    # Buscar CP, Piso, Depto
-    cp = None
-    piso = None
-    depto = None
-    remaining = []
-    
-    for p in parts:
-        p_upper = p.upper()
-        if p_upper.startswith('CP:') or p_upper.startswith('C.P.') or p_upper.startswith('CP '):
-            cp = re.sub(r'^(CP:|C\.P\.|CP)\s*', '', p_upper).strip()
-        elif 'PISO' in p_upper or p_upper.startswith('PISO:'):
-             piso = re.sub(r'PISO:?\s*', '', p_upper).strip()
-        elif 'DEPTO' in p_upper or 'DPTO' in p_upper:
-             depto = re.sub(r'(DEPTO|DPTO):?\s*', '', p_upper).strip()
-        else:
-            remaining.append(p)
+        # A. Separar componentes básicos
+        parts = [p.strip() for p in domicilio_str.split(',')]
+        if parts and parts[-1] == 'TRES DE FEBRERO':
+            parts.pop()
+        if parts and parts[-1] in localities_to_remove:
+            parts.pop()
             
-    street_full = ", ".join(remaining).strip()
-    
-    # --- PASO B: Separar Calle y Altura ---
-    calle = None
-    altura = None
-    
-    if street_full:
-        s = street_full
-        if s.endswith('S/N'):
-            s = s[:-3].strip()
+        cp, piso, depto = None, None, None
+        remaining = []
         
-        match = re.search(r'^(.*)\s+(\d+(?:[a-zA-Z])?)$', s)
-        if match:
-            calle = match.group(1).strip()
-            altura = match.group(2).strip()
-        else:
-            if s == 'S/N' or s == '':
-                 calle = None
-                 altura = 'S/N'
+        for p in parts:
+            p_upper = p.upper()
+            if p_upper.startswith('CP:') or p_upper.startswith('C.P.') or p_upper.startswith('CP '):
+                cp = re.sub(r'^(CP:|C\.P\.|CP)\s*', '', p_upper).strip()
+            elif 'PISO' in p_upper or p_upper.startswith('PISO:'):
+                 piso = re.sub(r'PISO:?\s*', '', p_upper).strip()
+            elif 'DEPTO' in p_upper or 'DPTO' in p_upper:
+                 depto = re.sub(r'(DEPTO|DPTO):?\s*', '', p_upper).strip()
             else:
-                 calle = s
-                 altura = None
-                 
-    # --- PASO C: Limpiar Calle ---
-    if calle:
-        calle = calle.upper()
-        calle = calle.replace('NO CONSTA', '')
-        calle = re.sub(r'\bS/N\b', '', calle)
+                remaining.append(p)
+                
+        street_full = ", ".join(remaining).strip()
         
-        replacements = [
-            (r'\bAV\.', 'AVENIDA'), (r'\bAV\b', 'AVENIDA'),
-            (r'\bGRAL\.', 'GENERAL'), (r'\bGRAL\b', 'GENERAL'),
-            (r'\bTTE\.', 'TENIENTE'), (r'\bDR\.', 'DOCTOR'),
-            (r'\bPJE\.', 'PASAJE'), (r'\b3 DE FEB\b', '3 DE FEBRERO'),
-            (r'\bJ\.\s*F\.\s*KENNEDY\b', 'JOHN F. KENNEDY'),
-        ]
-        for pat, repl in replacements:
-            calle = re.sub(pat, repl, calle)
+        # B. Separar Calle y Altura
+        calle, altura = None, None
+        if street_full:
+            s = street_full
+            if s.endswith('S/N'): s = s[:-3].strip()
+            match = re.search(r'^(.*)\s+(\d+(?:[a-zA-Z])?)$', s)
+            if match:
+                calle = match.group(1).strip()
+                altura = match.group(2).strip()
+            else:
+                if s == 'S/N' or s == '':
+                     calle = None
+                     altura = 'S/N'
+                else:
+                     calle = s
+                     altura = None
+                     
+        # C. Limpiar Calle
+        if calle:
+            calle = calle.upper()
+            calle = calle.replace('NO CONSTA', '')
+            calle = re.sub(r'\bS/N\b', '', calle)
+            replacements = [
+                (r'\bAV\.', 'AVENIDA'), (r'\bAV\b', 'AVENIDA'),
+                (r'\bGRAL\.', 'GENERAL'), (r'\bGRAL\b', 'GENERAL'),
+                (r'\bTTE\.', 'TENIENTE'), (r'\bDR\.', 'DOCTOR'),
+                (r'\bPJE\.', 'PASAJE'), (r'\b3 DE FEB\b', '3 DE FEBRERO'),
+                (r'\bJ\.\s*F\.\s*KENNEDY\b', 'JOHN F. KENNEDY'),
+            ]
+            for pat, repl in replacements:
+                calle = re.sub(pat, repl, calle)
+            calle = re.sub(r'CP[:\s]\s*\d+', '', calle)
+            calle = re.sub(r'\s+', ' ', calle).strip()
             
-        calle = re.sub(r'CP[:\s]\s*\d+', '', calle)
-        calle = re.sub(r'\s+', ' ', calle).strip()
+            # Si quedó solo número y no hay altura
+            if re.match(r'^\d+$', calle):
+                if not altura:
+                    altura = calle
+                    calle = None
         
-        if re.match(r'^\d+$', calle):
-            if not altura:
-                altura = calle
-                calle = None
+        if not calle: calle = None 
+        return pd.Series([calle, altura, piso, depto, cp])
+
+    # Aplicar la función
+    nuevas_columnas = df['Domicilio'].apply(limpiar_fila)
+    nuevas_columnas.columns = ['Calle', 'Altura', 'Piso', 'Depto', 'Codigo_Postal']
     
-    if not calle:
-        calle = None 
-        
-    return pd.Series([calle, altura, piso, depto, cp])
+    # Unir
+    df_final = pd.concat([df, nuevas_columnas], axis=1)
+    df_final.drop(columns=['Domicilio'], inplace=True)
+    
+    return df_final, None
 
 # ---------------------------------------------------------
-# 3. EJECUCIÓN AL CARGAR ARCHIVO
+# 3. INTERFAZ Y EDICIÓN
 # ---------------------------------------------------------
 if uploaded_file is not None:
-    try:
-        st.write("Procesando archivo...")
-        df = pd.read_csv(uploaded_file)
+    # Procesar solo si cambia el archivo (usamos cache)
+    df_procesado, error = procesar_archivo(uploaded_file)
+    
+    if error:
+        st.error(error)
+    else:
+        st.success("Archivo procesado. Revisa la tabla abajo.")
         
-        if 'Domicilio' not in df.columns:
-            st.error("El archivo no tiene una columna llamada 'Domicilio'.")
-        else:
-            # Procesar
-            nuevas_columnas = df['Domicilio'].apply(procesar_domicilio_completo)
-            nuevas_columnas.columns = ['Calle', 'Altura', 'Piso', 'Depto', 'Codigo_Postal']
-            
-            # Unir y limpiar
-            df_final = pd.concat([df, nuevas_columnas], axis=1)
-            df_final.drop(columns=['Domicilio'], inplace=True)
-            
-            st.success("¡Archivo procesado con éxito!")
-            
-            # Mostrar vista previa
-            st.write("Vista previa de los datos procesados:")
-            st.dataframe(df_final.head())
-            
-            # Botón de Descarga
-            csv_buffer = df_final.to_csv(index=False).encode('utf-8')
-            
-            st.download_button(
-                label="📥 Descargar CSV Procesado",
-                data=csv_buffer,
-                file_name="padron_procesado_final.csv",
-                mime="text/csv",
-            )
-            
-    except Exception as e:
-        st.error(f"Ocurrió un error al procesar el archivo: {e}")
+        st.subheader("Editor de Datos")
+        st.info("💡 Haz doble clic en cualquier celda para editarla. Los cambios se guardarán en el archivo descargable.")
+        
+        # --- AQUÍ ESTÁ LA CLAVE: st.data_editor ---
+        # Permite editar el dataframe. num_rows="dynamic" permitiría agregar filas (opcional)
+        df_editado = st.data_editor(df_procesado, num_rows="dynamic", use_container_width=True, height=600)
+        
+        st.write("---")
+        
+        # Botón de Descarga usando df_editado (la versión con tus cambios manuales)
+        csv_buffer = df_editado.to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📥 Descargar CSV Final (Con mis ediciones)",
+            data=csv_buffer,
+            file_name="padron_final_editado.csv",
+            mime="text/csv",
+        )
 
 else:
-    st.info("Por favor, sube un archivo CSV para comenzar.")
+    st.info("Esperando archivo...")
