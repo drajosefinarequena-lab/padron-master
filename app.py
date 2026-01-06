@@ -1,3 +1,5 @@
+from google.colab import drive
+drive.mount('/content/drive')
 import streamlit as st
 import pandas as pd
 import re
