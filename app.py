@@ -15,7 +15,7 @@ st.markdown("""
 """)
 
 # ---------------------------------------------------------
-# 1. FUNCIONES DE CARGA Y LIMPIEZA INICIAL
+# 1. FUNCIONES DE CARGA Y LIMPIEZA
 # ---------------------------------------------------------
 localities_to_remove = [
     'CASEROS', 'CIUDADELA', 'PABLO PODESTA', 'LOMA HERMOSA', 'VILLA BOSCH', 
@@ -30,8 +30,6 @@ def limpiar_domicilio_inicial(domicilio_str):
     if parts and parts[-1] == 'TRES DE FEBRERO': parts.pop()
     if parts and parts[-1] in localities_to_remove: parts.pop()
     
-    # Separación básica inicial (solo para tener Calle y Altura separadas)
-    # No limpiamos el nombre "a fondo" aquí para dejar que el usuario lo revise agrupado
     remaining = []
     for p in parts:
         p_upper = p.upper()
@@ -57,8 +55,52 @@ def limpiar_domicilio_inicial(domicilio_str):
         
     return pd.Series([calle, altura])
 
+def cargar_inteligente(file):
+    """Intenta cargar el archivo manejando diferentes formatos"""
+    file.seek(0)
+    # Intento 1: Leer normal con encabezados
+    df = pd.read_csv(file)
+    
+    # CASO A: Archivo Original (con Domicilio)
+    if 'Domicilio' in df.columns:
+        st.toast("Archivo original detectado. Procesando...")
+        cols = df['Domicilio'].apply(limpiar_domicilio_inicial)
+        cols.columns = ['Calle', 'Altura']
+        df = pd.concat([df, cols], axis=1)
+        df.drop(columns=['Domicilio'], inplace=True)
+        return df
+
+    # CASO B: Archivo Procesado con encabezados correctos
+    if 'Calle' in df.columns:
+        return df
+
+    # CASO C: Archivo sin encabezados (Raw)
+    # Si llegamos aquí, probablemente leyó la primera fila como título y 'Calle' no existe.
+    # Recargamos sin header.
+    file.seek(0)
+    df_raw = pd.read_csv(file, header=None)
+    
+    # Intentamos adivinar las columnas según la cantidad
+    # Asumimos estructura: Apellido, Nombre, Matricula, F_Nac, Calle, Altura, Piso, Depto
+    if len(df_raw.columns) >= 5:
+        st.toast("Archivo sin cabeceras detectado. Asignando nombres...")
+        nuevos_nombres = [f"Col_{i}" for i in range(len(df_raw.columns))]
+        
+        # Mapeo manual basado en tu archivo anterior
+        mapa = {0: 'Apellido', 1: 'Nombre', 2: 'Matricula', 3: 'F_Nacimiento', 4: 'Calle', 5: 'Altura', 6: 'Piso', 7: 'Depto'}
+        
+        for i, nombre in mapa.items():
+            if i < len(nuevos_nombres):
+                nuevos_nombres[i] = nombre
+                
+        df_raw.columns = nuevos_nombres
+        return df_raw
+
+    # Si nada funciona, devolvemos lo que hay, pero fallará si no hay columna Calle
+    return df
+
 # ---------------------------------------------------------
-# 2. GESTIÓN DEL ESTADO (SESSION STATE)
+# 2. GESTIÓN DEL ESTADO
 # ---------------------------------------------------------
 if 'df' not in st.session_state:
     st.session_state.df = None
@@ -66,7 +108,7 @@ if 'calles_revisadas' not in st.session_state:
     st.session_state.calles_revisadas = set()
 
 # ---------------------------------------------------------
-# 3. BARRA LATERAL (CARGA Y DESCARGA)
+# 3. BARRA LATERAL
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("1. Cargar Archivo")
@@ -74,34 +116,23 @@ with st.sidebar:
     
     if uploaded_file is not None and st.session_state.df is None:
         try:
-            df_temp = pd.read_csv(uploaded_file)
+            df_cargado = cargar_inteligente(uploaded_file)
             
-            # Si es el archivo original, procesamos la separación inicial
-            if 'Domicilio' in df_temp.columns and 'Calle' not in df_temp.columns:
-                st.info("Separando calles y alturas iniciales...")
-                cols = df_temp['Domicilio'].apply(limpiar_domicilio_inicial)
-                cols.columns = ['Calle', 'Altura']
-                # Mantenemos columnas extra si existen
-                df_temp = pd.concat([df_temp, cols], axis=1)
-                df_temp.drop(columns=['Domicilio'], inplace=True)
-            
-            st.session_state.df = df_temp
-            st.success("¡Archivo cargado!")
-            st.rerun()
+            if 'Calle' not in df_cargado.columns:
+                st.error("Error: No se pudo identificar la columna 'Calle'. Verifica el formato.")
+            else:
+                st.session_state.df = df_cargado
+                st.success("¡Archivo cargado!")
+                st.rerun()
             
         except Exception as e:
-            st.error(f"Error al cargar: {e}")
+            st.error(f"Error crítico al cargar: {e}")
 
     st.write("---")
     st.header("3. Descargar Resultado")
     if st.session_state.df is not None:
         csv = st.session_state.df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "📥 Bajar CSV Final",
-            csv,
-            "padron_limpio.csv",
-            "text/csv"
-        )
+        st.download_button("📥 Bajar CSV Final", csv, "padron_limpio.csv", "text/csv")
         
     if st.button("🔄 Reiniciar todo"):
         st.session_state.df = None
@@ -109,69 +140,75 @@ with st.sidebar:
         st.rerun()
 
 # ---------------------------------------------------------
-# 4. ÁREA PRINCIPAL DE TRABAJO
+# 4. ÁREA PRINCIPAL
 # ---------------------------------------------------------
 if st.session_state.df is not None:
     df = st.session_state.df
     
-    # Filtrar calles nulas
-    df['Calle'] = df['Calle'].fillna('SIN NOMBRE')
+    # Asegurar que Calle sea string y llenar nulos
+    df['Calle'] = df['Calle'].astype(str).replace('nan', 'SIN NOMBRE').fillna('SIN NOMBRE')
     
-    # Calcular conteos de calles, excluyendo las ya revisadas
+    # Calcular conteos
     conteo_calles = df['Calle'].value_counts()
     calles_pendientes = [c for c in conteo_calles.index if c not in st.session_state.calles_revisadas]
     
     total_calles = len(conteo_calles)
     restantes = len(calles_pendientes)
-    progreso = 1 - (restantes / total_calles) if total_calles > 0 else 0
     
-    st.progress(progreso)
-    st.write(f"Calles revisadas: **{total_calles - restantes}** / {total_calles} | Pendientes: **{restantes}**")
+    # Barra de progreso
+    if total_calles > 0:
+        progreso = 1 - (restantes / total_calles)
+        st.progress(progreso)
+    st.metric("Calles pendientes", f"{restantes}", delta=f"-{total_calles - restantes} revisadas")
 
     if restantes == 0:
+        st.balloons()
         st.success("¡Felicidades! Has revisado todas las calles agrupadas.")
     else:
-        # --- SELECCIÓN DE CALLE ---
-        # Por defecto tomamos la primera (la más frecuente)
+        # Tomar la primera calle pendiente
         calle_actual = calles_pendientes[0]
         count_actual = conteo_calles[calle_actual]
         
-        st.write("---")
+        st.divider()
         col1, col2 = st.columns([1, 2])
         
         with col1:
-            st.subheader("Calle a revisar")
-            st.info(f"Nombre actual: **{calle_actual}**")
-            st.write(f"Aparece en **{count_actual}** registros.")
+            st.subheader("🛠️ Editar Calle")
+            st.info(f"Estás revisando: **{calle_actual}**")
+            st.caption(f"Aparece en {count_actual} domicilios.")
             
-            # Opción de cambiar el nombre
-            nuevo_nombre = st.text_input("Editar nombre:", value=calle_actual)
-            
-            c1, c2 = st.columns(2)
-            if c1.button("✅ Confirmar / Guardar", type="primary"):
-                # Si el nombre cambió
-                if nuevo_nombre != calle_actual:
-                    # Actualizar en el DataFrame
-                    st.session_state.df.loc[st.session_state.df['Calle'] == calle_actual, 'Calle'] = nuevo_nombre
-                    st.toast(f"Renombrado: {calle_actual} -> {nuevo_nombre}")
-                else:
-                    st.toast(f"Marcado como correcto: {calle_actual}")
+            # Formulario para editar
+            with st.form("form_edicion"):
+                nuevo_nombre = st.text_input("Corrección:", value=calle_actual)
                 
-                # Marcar como revisada (usamos el nombre original para sacarla de la lista de pendientes)
-                st.session_state.calles_revisadas.add(calle_actual)
-                # También agregamos el nuevo nombre a revisadas para que no vuelva a aparecer
-                st.session_state.calles_revisadas.add(nuevo_nombre)
-                st.rerun()
-
-            if c2.button("Ignorar / Saltar"):
-                st.session_state.calles_revisadas.add(calle_actual)
-                st.rerun()
+                col_btn1, col_btn2 = st.columns(2)
+                confirmar = col_btn1.form_submit_button("✅ Guardar", type="primary")
+                ignorar = col_btn2.form_submit_button("⏭️ Ignorar/Saltar")
+                
+                if confirmar:
+                    if nuevo_nombre != calle_actual:
+                        # Aplicar cambio masivo
+                        st.session_state.df.loc[st.session_state.df['Calle'] == calle_actual, 'Calle'] = nuevo_nombre
+                        st.toast(f"Cambio aplicado: {calle_actual} ➝ {nuevo_nombre}")
+                        # Marcar el NUEVO nombre como revisado para que no vuelva a salir
+                        st.session_state.calles_revisadas.add(nuevo_nombre)
+                    else:
+                        st.toast("Calle marcada como correcta.")
+                    
+                    # Marcar el viejo como revisado
+                    st.session_state.calles_revisadas.add(calle_actual)
+                    st.rerun()
+                
+                if ignorar:
+                    st.session_state.calles_revisadas.add(calle_actual)
+                    st.rerun()
                 
         with col2:
-            st.subheader("Vista previa de registros")
-            # Mostrar hasta 10 ejemplos de esta calle
-            ejemplos = df[df['Calle'] == calle_actual].head(10)
-            st.dataframe(ejemplos, use_container_width=True)
+            st.subheader("📋 Registros afectados")
+            st.caption("Muestra de dónde aparece esta calle:")
+            # Filtramos y mostramos columnas relevantes
+            cols_to_show = [c for c in ['Apellido', 'Nombre', 'Calle', 'Altura'] if c in df.columns]
+            st.dataframe(df[df['Calle'] == calle_actual][cols_to_show].head(10), use_container_width=True)
 
 else:
-    st.info("Sube un archivo desde el menú lateral para comenzar.")
+    st.info("👈 Sube un archivo CSV en el menú lateral para comenzar.")
