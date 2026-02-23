@@ -17,7 +17,7 @@ CLAVE_ADMIN = "josefina3f_admin"
 
 st.set_page_config(page_title="Lista 4 - Padrón 2026", page_icon="✌️", layout="wide")
 
-# --- CONEXIÓN GOOGLE SHEETS ---
+# --- CONEXIÓN GOOGLE SHEETS PARA AUDITORÍA ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def registrar_evento(nombre, localidad, accion, detalle):
@@ -32,9 +32,11 @@ def registrar_evento(nombre, localidad, accion, detalle):
         conn.update(worksheet="resultados", data=pd.concat([df_log, nueva_fila], ignore_index=True))
     except: pass
 
-# --- ACCESO ---
+# --- PERSISTENCIA DE SESIÓN ---
 if "autenticado" not in st.session_state: st.session_state.autenticado = False
+if "busqueda_activa" not in st.session_state: st.session_state.busqueda_activa = ""
 
+# --- PANTALLA DE ACCESO ---
 if not st.session_state.autenticado:
     st.markdown("<h1 style='text-align:center;'>✌️ LISTA 4 - INGRESO</h1>", unsafe_allow_html=True)
     nom = st.text_input("NOMBRE Y APELLIDO:")
@@ -56,31 +58,38 @@ else:
     @st.cache_data
     def cargar_datos_excel():
         try:
-            # Leemos el nuevo archivo que subiste
+            # Forzamos la carga del nuevo archivo Excel
             df = pd.read_excel("PADRON2026.xlsx", engine='openpyxl')
-            # Filtramos columnas para ver DNI, Nombre, Apellido y Dirección
+            # Filtramos columnas esenciales para que la tabla no sea gigante
             visibles = [c for c in df.columns if any(x in str(c).upper() for x in ['DNI', 'MATRICULA', 'NOMBRE', 'APELLIDO', 'DIRECCION', 'CALLE'])]
             return df[visibles].fillna('')
         except Exception as e:
-            st.error(f"Error al cargar PADRON2026.xlsx: {e}")
+            st.error(f"Error cargando PADRON2026.xlsx: {e}")
             return None
 
     padron = cargar_datos_excel()
 
     if padron is not None:
-        busqueda = st.text_input("🔎 BUSCÁ POR CALLE, APELLIDO O DNI:")
-        if busqueda:
-            registrar_evento(st.session_state.nombre, st.session_state.localidad, "BÚSQUEDA", busqueda)
-            termino = busqueda.strip().upper()
-            mask = padron.astype(str).apply(lambda row: row.str.upper().str.contains(termino)).any(axis=1)
-            res = padron[mask]
+        # Formulario para evitar recargas accidentales
+        with st.form("panel_busqueda"):
+            query = st.text_input("🔎 BUSCÁ POR CALLE, APELLIDO O DNI:", value=st.session_state.busqueda_activa)
+            enviar = st.form_submit_button("EJECUTAR BÚSQUEDA")
             
-            if not res.empty:
-                st.success(f"Encontrados: {len(res)} resultados.")
-                st.dataframe(res, use_container_width=True, height=600)
-            else:
-                st.warning("No se encontraron resultados.")
+            if enviar and query:
+                st.session_state.busqueda_activa = query
+                registrar_evento(st.session_state.nombre, st.session_state.localidad, "BÚSQUEDA", query)
+                
+                termino = query.strip().upper()
+                mask = padron.astype(str).apply(lambda row: row.str.upper().str.contains(termino)).any(axis=1)
+                resultados = padron[mask]
+                
+                if not resultados.empty:
+                    st.success(f"Se encontraron **{len(resultados)}** resultados para '{query}'.")
+                    st.dataframe(resultados, use_container_width=True, height=600)
+                else:
+                    st.warning("No se encontraron resultados.")
 
     if st.button("CERRAR SESIÓN"):
         st.session_state.autenticado = False
+        st.session_state.busqueda_activa = ""
         st.rerun()
